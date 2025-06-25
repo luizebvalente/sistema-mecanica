@@ -1,0 +1,21 @@
+version: "1"
+
+services:
+  - type: web
+    name: sistema-mecanica
+    env: python
+    plan: free
+    buildCommand: |
+      pip install -r requirements.txt
+      cd sistema-mecanica-frontend
+      npm install
+      npm run build
+      cp -r dist/* ../src/static/
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: NODE_VERSION
+        value: 18
+    autoDeploy: false
+
