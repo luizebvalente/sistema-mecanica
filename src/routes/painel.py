@@ -1,49 +1,66 @@
-from flask import Blueprint, request, jsonify
-from src.models.user import db
+from flask import Blueprint, jsonify
 from src.models.box import Box
 from src.models.servico_execucao import ServicoExecucao
 from src.models.fila_servico import FilaServico
-from datetime import datetime
+from datetime import datetime, date
 
 painel_bp = Blueprint('painel', __name__)
 
 @painel_bp.route('/painel', methods=['GET'])
-def get_painel():
+def get_painel_data():
     try:
-        # Buscar todos os boxes
         boxes = Box.query.all()
         painel_data = []
         
         for box in boxes:
-            # Buscar serviço em execução no box
+            # Buscar serviço atual em execução
             servico_atual = ServicoExecucao.query.filter_by(
-                box_id=box.id, 
+                box_id=box.id,
                 status='em_andamento'
             ).first()
             
-            # Buscar fila de serviços do box
+            # Buscar fila de serviços para hoje apenas
+            hoje = date.today()
             fila_servicos = FilaServico.query.filter_by(
-                box_id=box.id, 
+                box_id=box.id,
                 status='agendado'
-            ).order_by(
-                FilaServico.prioridade.desc(), 
-                FilaServico.criado_em.asc()
-            ).all()
+            ).filter(
+                FilaServico.agendado_para >= datetime.combine(hoje, datetime.min.time()),
+                FilaServico.agendado_para < datetime.combine(hoje, datetime.max.time())
+            ).order_by(FilaServico.posicao_fila).all()
             
-            # Calcular tempo restante se houver serviço em execução
-            tempo_restante = None
-            if servico_atual:
+            # Calcular tempo e status de atraso
+            tempo_restante_segundos = 0
+            em_atraso = False
+            tempo_atraso_segundos = 0
+            
+            if servico_atual and servico_atual.fim_previsto:
                 agora = datetime.utcnow()
-                if servico_atual.fim_previsto > agora:
-                    tempo_restante = int((servico_atual.fim_previsto - agora).total_seconds())
-                else:
-                    tempo_restante = 0
+                delta = servico_atual.fim_previsto - agora
+                tempo_restante_segundos = int(delta.total_seconds())
+                
+                if tempo_restante_segundos < 0:
+                    em_atraso = True
+                    tempo_atraso_segundos = abs(tempo_restante_segundos)
+                    tempo_restante_segundos = 0
+            
+            # Formatar horários para exibição
+            horario_inicio = None
+            horario_fim_previsto = None
+            if servico_atual:
+                horario_inicio = servico_atual.inicio.strftime('%H:%M') if servico_atual.inicio else None
+                horario_fim_previsto = servico_atual.fim_previsto.strftime('%H:%M') if servico_atual.fim_previsto else None
             
             box_data = {
                 'box': box.to_dict(),
                 'servico_atual': servico_atual.to_dict() if servico_atual else None,
-                'tempo_restante_segundos': tempo_restante,
-                'fila_servicos': [servico.to_dict() for servico in fila_servicos]
+                'fila_servicos': [servico.to_dict() for servico in fila_servicos],
+                'tempo_restante_segundos': tempo_restante_segundos,
+                'em_atraso': em_atraso,
+                'tempo_atraso_segundos': tempo_atraso_segundos,
+                'horario_inicio': horario_inicio,
+                'horario_fim_previsto': horario_fim_previsto,
+                'total_fila': len(fila_servicos)
             }
             
             painel_data.append(box_data)
@@ -53,65 +70,59 @@ def get_painel():
         return jsonify({'error': str(e)}), 500
 
 @painel_bp.route('/painel/box/<int:box_id>', methods=['GET'])
-def get_detalhes_box(box_id):
+def get_box_detalhes(box_id):
     try:
-        # Buscar o box
         box = Box.query.get_or_404(box_id)
         
-        # Buscar serviço em execução
+        # Buscar serviço atual
         servico_atual = ServicoExecucao.query.filter_by(
-            box_id=box_id, 
+            box_id=box_id,
             status='em_andamento'
         ).first()
         
-        # Buscar fila de serviços
+        # Buscar fila completa para hoje
+        hoje = date.today()
         fila_servicos = FilaServico.query.filter_by(
-            box_id=box_id, 
+            box_id=box_id,
             status='agendado'
-        ).order_by(
-            FilaServico.prioridade.desc(), 
-            FilaServico.criado_em.asc()
-        ).all()
+        ).filter(
+            FilaServico.agendado_para >= datetime.combine(hoje, datetime.min.time()),
+            FilaServico.agendado_para < datetime.combine(hoje, datetime.max.time())
+        ).order_by(FilaServico.posicao_fila).all()
         
-        # Calcular tempo restante
-        tempo_restante = None
-        if servico_atual:
+        # Buscar histórico recente (últimos 5 serviços)
+        historico = ServicoExecucao.query.filter_by(
+            box_id=box_id,
+            status='concluido'
+        ).order_by(ServicoExecucao.fim_real.desc()).limit(5).all()
+        
+        # Calcular tempo e status de atraso
+        tempo_restante_segundos = 0
+        em_atraso = False
+        tempo_atraso_segundos = 0
+        
+        if servico_atual and servico_atual.fim_previsto:
             agora = datetime.utcnow()
-            if servico_atual.fim_previsto > agora:
-                tempo_restante = int((servico_atual.fim_previsto - agora).total_seconds())
-            else:
-                tempo_restante = 0
+            delta = servico_atual.fim_previsto - agora
+            tempo_restante_segundos = int(delta.total_seconds())
+            
+            if tempo_restante_segundos < 0:
+                em_atraso = True
+                tempo_atraso_segundos = abs(tempo_restante_segundos)
+                tempo_restante_segundos = 0
         
-        detalhes = {
+        return jsonify({
             'box': box.to_dict(),
             'servico_atual': servico_atual.to_dict() if servico_atual else None,
-            'tempo_restante_segundos': tempo_restante,
-            'fila_servicos': [servico.to_dict() for servico in fila_servicos]
-        }
-        
-        return jsonify(detalhes)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@painel_bp.route('/painel/tempo-restante', methods=['GET'])
-def get_tempos_restantes():
-    try:
-        servicos_em_andamento = ServicoExecucao.query.filter_by(status='em_andamento').all()
-        tempos = {}
-        
-        agora = datetime.utcnow()
-        for servico in servicos_em_andamento:
-            if servico.fim_previsto > agora:
-                tempo_restante = int((servico.fim_previsto - agora).total_seconds())
-            else:
-                tempo_restante = 0
-            
-            tempos[servico.box_id] = {
-                'servico_id': servico.id,
-                'tempo_restante_segundos': tempo_restante
-            }
-        
-        return jsonify(tempos)
+            'fila_servicos': [servico.to_dict() for servico in fila_servicos],
+            'historico': [servico.to_dict() for servico in historico],
+            'tempo_restante_segundos': tempo_restante_segundos,
+            'em_atraso': em_atraso,
+            'tempo_atraso_segundos': tempo_atraso_segundos,
+            'horario_inicio': servico_atual.inicio.strftime('%H:%M') if servico_atual and servico_atual.inicio else None,
+            'horario_fim_previsto': servico_atual.fim_previsto.strftime('%H:%M') if servico_atual and servico_atual.fim_previsto else None,
+            'total_fila': len(fila_servicos)
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
