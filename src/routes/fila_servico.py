@@ -55,54 +55,62 @@ def get_fila_gestao():
         
         # Adicionar serviços pausados primeiro (prioridade)
         for servico in servicos_pausados:
-            item = servico.to_dict()
-            item['tipo_item'] = 'pausado'
-            item['pode_retomar'] = True
-            item['pode_finalizar'] = True
-            item['prioridade_visual'] = 'alta'  # Para destacar na interface
-            
-            # Calcular tempo de pausa atual
-            if servico.pausado_em:
-                tempo_pausa_atual = (datetime.utcnow() - servico.pausado_em).total_seconds() / 60
-                item['tempo_pausa_atual_minutos'] = int(tempo_pausa_atual)
-                item['tempo_pausa_atual_formatado'] = formatar_tempo_minutos(int(tempo_pausa_atual))
-            
-            # Calcular tempo total de execução
-            if servico.inicio:
-                tempo_total_execucao = (datetime.utcnow() - servico.inicio).total_seconds() / 60
-                tempo_efetivo = tempo_total_execucao - servico.tempo_pausado_total
+            try:
+                item = servico.to_dict()
+                item['tipo_item'] = 'pausado'
+                item['pode_retomar'] = True
+                item['pode_finalizar'] = True
+                item['prioridade_visual'] = 'alta'  # Para destacar na interface
+                
+                # Calcular tempo de pausa atual
                 if servico.pausado_em:
                     tempo_pausa_atual = (datetime.utcnow() - servico.pausado_em).total_seconds() / 60
-                    tempo_efetivo -= tempo_pausa_atual
-                item['tempo_execucao_efetivo_minutos'] = max(0, int(tempo_efetivo))
-                item['tempo_execucao_efetivo_formatado'] = formatar_tempo_minutos(max(0, int(tempo_efetivo)))
-            
-            # Adicionar informações do histórico de pausas
-            if incluir_detalhes and servico.historico_pausas:
-                import json
-                try:
-                    historico = json.loads(servico.historico_pausas)
-                    item['total_pausas'] = len(historico)
-                    item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total
-                    item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total)
-                except:
-                    item['total_pausas'] = 0
-            
-            resultado.append(item)
+                    item['tempo_pausa_atual_minutos'] = int(tempo_pausa_atual)
+                    item['tempo_pausa_atual_formatado'] = formatar_tempo_minutos(int(tempo_pausa_atual))
+                
+                # Calcular tempo total de execução
+                if servico.inicio:
+                    tempo_total_execucao = (datetime.utcnow() - servico.inicio).total_seconds() / 60
+                    tempo_pausado_total_safe = servico.tempo_pausado_total or 0
+                    tempo_efetivo = tempo_total_execucao - tempo_pausado_total_safe
+                    if servico.pausado_em:
+                        tempo_pausa_atual = (datetime.utcnow() - servico.pausado_em).total_seconds() / 60
+                        tempo_efetivo -= tempo_pausa_atual
+                    item['tempo_execucao_efetivo_minutos'] = max(0, int(tempo_efetivo))
+                    item['tempo_execucao_efetivo_formatado'] = formatar_tempo_minutos(max(0, int(tempo_efetivo)))
+                
+                # Adicionar informações do histórico de pausas
+                if incluir_detalhes and hasattr(servico, 'historico_pausas') and servico.historico_pausas:
+                    try:
+                        historico = json.loads(servico.historico_pausas)
+                        item['total_pausas'] = len(historico)
+                        item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total or 0
+                        item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total or 0)
+                    except:
+                        item['total_pausas'] = 0
+                
+                resultado.append(item)
+            except Exception as e:
+                print(f"Erro ao processar serviço pausado {servico.id}: {e}")
+                continue
         
         # Adicionar serviços da fila
         for servico in servicos_fila:
-            item = servico.to_dict()
-            item['tipo_item'] = 'fila'
-            item['pode_iniciar'] = True
-            item['prioridade_visual'] = 'normal'
-            
-            # Calcular tempo estimado total
-            tempo_estimado = servico.calcular_tempo_total_estimado()
-            item['tempo_estimado_total_minutos'] = tempo_estimado
-            item['tempo_estimado_total_formatado'] = formatar_tempo_minutos(tempo_estimado)
-            
-            resultado.append(item)
+            try:
+                item = servico.to_dict()
+                item['tipo_item'] = 'fila'
+                item['pode_iniciar'] = True
+                item['prioridade_visual'] = 'normal'
+                
+                # Calcular tempo estimado total
+                tempo_estimado = servico.calcular_tempo_total_estimado()
+                item['tempo_estimado_total_minutos'] = tempo_estimado
+                item['tempo_estimado_total_formatado'] = formatar_tempo_minutos(tempo_estimado)
+                
+                resultado.append(item)
+            except Exception as e:
+                print(f"Erro ao processar serviço da fila {servico.id}: {e}")
+                continue
         
         # Estatísticas gerais
         estatisticas = {
@@ -121,102 +129,116 @@ def get_fila_gestao():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-def formatar_tempo_minutos(minutos):
-    """Formata tempo em minutos para formato legível"""
-    if minutos < 60:
-        return f"{minutos}min"
-    else:
-        horas = minutos // 60
-        mins = minutos % 60
-        if mins == 0:
-            return f"{horas}h"
-        else:
-            return f"{horas}h {mins}min"
-
 @fila_servico_bp.route('/fila-servicos/pausados', methods=['GET'])
 def get_servicos_pausados():
-    """Retorna apenas os serviços pausados com informações detalhadas"""
+    """Retorna apenas os serviços pausados com informações detalhadas - VERSÃO CORRIGIDA"""
     try:
         box_id = request.args.get('box_id')
         
-        # Buscar serviços pausados
+        # Buscar serviços pausados na tabela CORRETA (ServicoExecucao, não FilaServico)
         query = ServicoExecucao.query.filter_by(status='pausado')
         if box_id:
-            query = query.filter_by(box_id=box_id)
+            try:
+                query = query.filter_by(box_id=int(box_id))
+            except (ValueError, TypeError):
+                return jsonify({'error': 'box_id deve ser um número válido'}), 400
         
         servicos_pausados = query.order_by(ServicoExecucao.pausado_em.desc()).all()
         
         resultado = []
         for servico in servicos_pausados:
-            item = servico.to_dict()
-            
-            # Calcular tempo de pausa atual
-            if servico.pausado_em:
-                tempo_pausa_atual = (datetime.utcnow() - servico.pausado_em).total_seconds() / 60
-                item['tempo_pausa_atual_minutos'] = int(tempo_pausa_atual)
-                item['tempo_pausa_atual_formatado'] = formatar_tempo_minutos(int(tempo_pausa_atual))
+            try:
+                item = servico.to_dict()
                 
-                # Classificar urgência da pausa
-                if tempo_pausa_atual > 120:  # Mais de 2 horas
-                    item['urgencia_pausa'] = 'critica'
-                elif tempo_pausa_atual > 60:  # Mais de 1 hora
-                    item['urgencia_pausa'] = 'alta'
-                elif tempo_pausa_atual > 30:  # Mais de 30 minutos
-                    item['urgencia_pausa'] = 'media'
-                else:
-                    item['urgencia_pausa'] = 'baixa'
-            
-            # Calcular tempo total de execução efetivo
-            if servico.inicio:
-                tempo_total_execucao = (datetime.utcnow() - servico.inicio).total_seconds() / 60
-                tempo_efetivo = tempo_total_execucao - servico.tempo_pausado_total
+                # Calcular tempo de pausa atual com proteção contra erros
                 if servico.pausado_em:
-                    tempo_pausa_atual = (datetime.utcnow() - servico.pausado_em).total_seconds() / 60
-                    tempo_efetivo -= tempo_pausa_atual
-                item['tempo_execucao_efetivo_minutos'] = max(0, int(tempo_efetivo))
-                item['tempo_execucao_efetivo_formatado'] = formatar_tempo_minutos(max(0, int(tempo_efetivo)))
-            
-            # Informações do histórico de pausas
-            if servico.historico_pausas:
-                import json
-                try:
-                    historico = json.loads(servico.historico_pausas)
-                    item['total_pausas_anteriores'] = len(historico)
-                    item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total
-                    item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total)
+                    agora = datetime.utcnow()
+                    tempo_pausa_atual = int((agora - servico.pausado_em).total_seconds() / 60)
+                    item['tempo_pausa_atual_minutos'] = tempo_pausa_atual
+                    item['tempo_pausa_atual_formatado'] = formatar_tempo_minutos(tempo_pausa_atual)
                     
-                    # Última pausa antes da atual
-                    if historico:
-                        ultima_pausa = historico[-1]
-                        item['ultima_pausa_anterior'] = {
-                            'duracao_minutos': ultima_pausa.get('duracao_minutos', 0),
-                            'motivo': ultima_pausa.get('motivo', 'Não informado')
-                        }
-                except:
+                    # Classificar urgência da pausa
+                    if tempo_pausa_atual > 120:  # Mais de 2 horas
+                        item['urgencia_pausa'] = 'critica'
+                    elif tempo_pausa_atual > 60:  # Mais de 1 hora
+                        item['urgencia_pausa'] = 'alta'
+                    elif tempo_pausa_atual > 30:  # Mais de 30 minutos
+                        item['urgencia_pausa'] = 'media'
+                    else:
+                        item['urgencia_pausa'] = 'baixa'
+                else:
+                    item['tempo_pausa_atual_minutos'] = 0
+                    item['tempo_pausa_atual_formatado'] = '0min'
+                    item['urgencia_pausa'] = 'baixa'
+                
+                # Calcular tempo total de execução efetivo com proteção
+                if servico.inicio:
+                    agora = datetime.utcnow()
+                    tempo_total_execucao = (agora - servico.inicio).total_seconds() / 60
+                    tempo_pausado_total_safe = servico.tempo_pausado_total or 0
+                    tempo_efetivo = tempo_total_execucao - tempo_pausado_total_safe
+                    
+                    if servico.pausado_em:
+                        tempo_pausa_atual = (agora - servico.pausado_em).total_seconds() / 60
+                        tempo_efetivo -= tempo_pausa_atual
+                        
+                    item['tempo_execucao_efetivo_minutos'] = max(0, int(tempo_efetivo))
+                    item['tempo_execucao_efetivo_formatado'] = formatar_tempo_minutos(max(0, int(tempo_efetivo)))
+                else:
+                    item['tempo_execucao_efetivo_minutos'] = 0
+                    item['tempo_execucao_efetivo_formatado'] = '0min'
+                
+                # Informações do histórico de pausas com proteção
+                if hasattr(servico, 'historico_pausas') and servico.historico_pausas:
+                    try:
+                        historico = json.loads(servico.historico_pausas)
+                        item['total_pausas_anteriores'] = len(historico)
+                        item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total or 0
+                        item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total or 0)
+                        
+                        # Última pausa antes da atual
+                        if historico:
+                            ultima_pausa = historico[-1]
+                            item['ultima_pausa_anterior'] = {
+                                'duracao_minutos': ultima_pausa.get('duracao_minutos', 0),
+                                'motivo': ultima_pausa.get('motivo', 'Não informado')
+                            }
+                    except (json.JSONDecodeError, TypeError):
+                        item['total_pausas_anteriores'] = 0
+                        item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total or 0
+                        item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total or 0)
+                else:
                     item['total_pausas_anteriores'] = 0
-            else:
-                item['total_pausas_anteriores'] = 0
-            
-            # Calcular percentual de conclusão estimado
-            if servico.tipo_servico:
-                tempo_estimado = servico.tipo_servico.tempo_estimado
-                tempo_efetivo = item.get('tempo_execucao_efetivo_minutos', 0)
-                if tempo_estimado > 0:
-                    percentual = min(100, (tempo_efetivo / tempo_estimado) * 100)
-                    item['percentual_conclusao_estimado'] = int(percentual)
+                    item['tempo_total_pausado_minutos'] = servico.tempo_pausado_total or 0
+                    item['tempo_total_pausado_formatado'] = formatar_tempo_minutos(servico.tempo_pausado_total or 0)
+                
+                # Calcular percentual de conclusão estimado com proteção
+                if servico.tipo_servico and hasattr(servico.tipo_servico, 'tempo_estimado'):
+                    tempo_estimado = servico.tipo_servico.tempo_estimado
+                    tempo_efetivo = item.get('tempo_execucao_efetivo_minutos', 0)
+                    if tempo_estimado > 0:
+                        percentual = min(100, (tempo_efetivo / tempo_estimado) * 100)
+                        item['percentual_conclusao_estimado'] = int(percentual)
+                    else:
+                        item['percentual_conclusao_estimado'] = 0
                 else:
                     item['percentual_conclusao_estimado'] = 0
-            
-            resultado.append(item)
+                
+                resultado.append(item)
+                
+            except Exception as e:
+                print(f"Erro ao processar serviço pausado {servico.id}: {e}")
+                # Continuar com próximo serviço em vez de falhar completamente
+                continue
         
         # Estatísticas dos serviços pausados
         estatisticas = {
-            'total_pausados': len(servicos_pausados),
+            'total_pausados': len(resultado),
             'pausas_criticas': len([s for s in resultado if s.get('urgencia_pausa') == 'critica']),
             'pausas_altas': len([s for s in resultado if s.get('urgencia_pausa') == 'alta']),
             'pausas_medias': len([s for s in resultado if s.get('urgencia_pausa') == 'media']),
             'pausas_baixas': len([s for s in resultado if s.get('urgencia_pausa') == 'baixa']),
-            'boxes_afetados': len(set(s['box_id'] for s in resultado))
+            'boxes_afetados': len(set(s.get('box_id', 0) for s in resultado))
         }
         
         return jsonify({
@@ -224,8 +246,39 @@ def get_servicos_pausados():
             'estatisticas': estatisticas,
             'timestamp': datetime.utcnow().isoformat()
         })
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        print(f"Erro no endpoint /fila-servicos/pausados: {e}")
+        # IMPORTANTE: Retornar 200 com array vazio em vez de 500 para não quebrar o frontend
+        return jsonify({
+            'servicos_pausados': [],
+            'estatisticas': {
+                'total_pausados': 0,
+                'pausas_criticas': 0,
+                'pausas_altas': 0,
+                'pausas_medias': 0,
+                'pausas_baixas': 0,
+                'boxes_afetados': 0
+            },
+            'timestamp': datetime.utcnow().isoformat(),
+            'erro': str(e)
+        }), 200  # 200 em vez de 500 para não quebrar o frontend
+
+def formatar_tempo_minutos(minutos):
+    """Formata tempo em minutos para formato legível"""
+    try:
+        minutos = int(minutos) if minutos else 0
+        if minutos < 60:
+            return f"{minutos}min"
+        else:
+            horas = minutos // 60
+            mins = minutos % 60
+            if mins == 0:
+                return f"{horas}h"
+            else:
+                return f"{horas}h {mins}min"
+    except (ValueError, TypeError):
+        return "0min"
 
 @fila_servico_bp.route('/fila-servicos', methods=['POST'])
 def create_fila_servico():
@@ -697,4 +750,3 @@ def get_estatisticas_fila(box_id):
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
