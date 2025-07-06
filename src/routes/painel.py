@@ -448,3 +448,112 @@ def formatar_tempo_segundos(segundos):
             return f"{minutos}min"
         else:
             return f"{minutos}min {segs}s"
+
+# Adicione estas rotas temporárias no final do src/routes/painel.py
+
+@painel_bp.route('/fix-database-emergency', methods=['POST'])
+def fix_database_emergency():
+    """ENDPOINT TEMPORÁRIO - Corrige campos faltantes no banco"""
+    try:
+        data = request.get_json() or {}
+        senha = data.get('senha', '')
+        
+        # Senha de segurança
+        if senha != 'emergency2025':
+            return jsonify({'erro': 'Senha necessária'}), 401
+        
+        from sqlalchemy import text
+        correcoes = []
+        
+        # 1. Verificar e adicionar campos faltantes
+        try:
+            # Tentar adicionar campo criado_em
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo criado_em adicionado')
+        except:
+            correcoes.append('ℹ️ Campo criado_em já existe')
+        
+        try:
+            # Tentar adicionar campo atualizado_em
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo atualizado_em adicionado')
+        except:
+            correcoes.append('ℹ️ Campo atualizado_em já existe')
+        
+        try:
+            # Tentar adicionar campo historico_pausas
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN historico_pausas TEXT'))
+            correcoes.append('✅ Campo historico_pausas adicionado')
+        except:
+            correcoes.append('ℹ️ Campo historico_pausas já existe')
+        
+        # 2. Corrigir valores NULL
+        try:
+            result = db.session.execute(text('UPDATE servico_execucao SET tempo_pausado_total = 0 WHERE tempo_pausado_total IS NULL'))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_pausado_total NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ao corrigir tempo_pausado_total: {e}')
+        
+        try:
+            result = db.session.execute(text('UPDATE servico_execucao SET tempo_extra_minutos = 0 WHERE tempo_extra_minutos IS NULL'))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_extra_minutos NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ao corrigir tempo_extra_minutos: {e}')
+        
+        try:
+            result = db.session.execute(text("UPDATE servico_execucao SET criado_em = inicio WHERE criado_em IS NULL AND inicio IS NOT NULL"))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros criado_em NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ao corrigir criado_em: {e}')
+        
+        # 3. Corrigir inconsistências de status
+        try:
+            result = db.session.execute(text("UPDATE servico_execucao SET status = 'em_andamento', pausado_em = NULL WHERE status = 'pausado' AND pausado_em IS NULL"))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} serviços pausados sem data')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ao corrigir status: {e}')
+        
+        # 4. Sincronizar boxes
+        try:
+            # Liberar boxes sem serviço ativo
+            result = db.session.execute(text("""
+                UPDATE box SET status = 'livre' 
+                WHERE status = 'ocupado' 
+                AND id NOT IN (
+                    SELECT DISTINCT box_id FROM servico_execucao 
+                    WHERE status IN ('em_andamento', 'pausado')
+                )
+            """))
+            correcoes.append(f'✅ Liberados {result.rowcount} boxes sem serviço')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ao sincronizar boxes: {e}')
+        
+        db.session.commit()
+        
+        # 5. Verificar resultado
+        try:
+            result = db.session.execute(text('SELECT COUNT(*) as total FROM servico_execucao')).fetchone()
+            total_servicos = result[0] if result else 0
+            
+            result = db.session.execute(text('SELECT COUNT(*) as total FROM servico_execucao WHERE tempo_pausado_total IS NOT NULL')).fetchone()
+            com_tempo_pausado = result[0] if result else 0
+            
+            correcoes.append(f'📊 Total de serviços: {total_servicos}')
+            correcoes.append(f'📊 Com tempo_pausado_total válido: {com_tempo_pausado}')
+        except Exception as e:
+            correcoes.append(f'❌ Erro na verificação: {e}')
+        
+        return jsonify({
+            'status': 'sucesso',
+            'correcoes': correcoes,
+            'timestamp': datetime.utcnow().isoformat(),
+            'instrucao': 'Agora substitua a model ServicoExecucao pelo código corrigido e faça deploy'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'erro',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat()
+        }), 500
