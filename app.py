@@ -14,10 +14,7 @@ from src.routes.tipo_servico import tipo_servico_bp
 from src.routes.servico_execucao import servico_execucao_bp
 from src.routes.fila_servico import fila_servico_bp
 from src.routes.painel import painel_bp
-from src.routes.diagnostico import diagnostico_bp
 
-# Registre o blueprint junto com os outros
-app.register_blueprint(diagnostico_bp, url_prefix='/api')
 
 def create_app():
     # Configurar diretório estático
