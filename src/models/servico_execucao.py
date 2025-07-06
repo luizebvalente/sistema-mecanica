@@ -1,6 +1,7 @@
 # src/models/servico_execucao.py - VERSÃO CORRIGIDA COMPLETA
 from src.models.user import db
 from datetime import datetime
+import json
 
 class ServicoExecucao(db.Model):
     __tablename__ = 'servico_execucao'
@@ -21,11 +22,11 @@ class ServicoExecucao(db.Model):
     tempo_pausado_total = db.Column(db.Integer, default=0)
     motivo_tempo_extra = db.Column(db.String(200))
     
-    # ADICIONADO: Campos de timestamp que estavam faltando
+    # Timestamps
     criado_em = db.Column(db.DateTime, default=datetime.utcnow)
     atualizado_em = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # ADICIONADO: Campo para histórico de pausas
+    # Histórico de pausas
     historico_pausas = db.Column(db.Text)
     
     # Dados do cliente
@@ -48,76 +49,73 @@ class ServicoExecucao(db.Model):
     tipo_servico = db.relationship('TipoServico', backref=db.backref('servicos_execucao', lazy=True))
     
     def to_dict(self):
-        """Converte para dict com cálculos seguros (anti-NaN)"""
+        """Converte para dict com cálculos seguros - VERSÃO CORRIGIDA"""
         agora = datetime.utcnow()
         
-        # Valores padrão seguros para evitar NaN
+        # Valores padrão seguros
         tempo_decorrido_total = 0
         tempo_execucao_efetivo = 0
         tempo_restante = 0
         percentual_conclusao = 0
         em_atraso = False
         tempo_atraso = 0
+        tempo_estimado_total = 60  # Default para evitar divisão por zero
         
         try:
+            # 1. Calcular tempo decorrido total desde o início
             if self.inicio:
-                # Tempo decorrido desde o início (sempre número válido)
                 delta_inicio = agora - self.inicio
                 tempo_decorrido_total = max(0, int(delta_inicio.total_seconds() / 60))
-                
-                # Tempo pausado atual se está pausado
-                tempo_pausado_atual = 0
-                if self.status == 'pausado' and self.pausado_em:
-                    delta_pausa = agora - self.pausado_em
-                    tempo_pausado_atual = max(0, int(delta_pausa.total_seconds() / 60))
-                
-                # Tempo efetivo = tempo total - tempo pausado total - tempo pausado atual
-                tempo_pausado_total_safe = self.tempo_pausado_total if self.tempo_pausado_total is not None else 0
-                tempo_execucao_efetivo = tempo_decorrido_total - tempo_pausado_total_safe - tempo_pausado_atual
-                tempo_execucao_efetivo = max(0, tempo_execucao_efetivo)
-                
-                # Calcular tempo restante e percentual com base no tipo de serviço
-                if self.tipo_servico and hasattr(self.tipo_servico, 'tempo_estimado') and self.tipo_servico.tempo_estimado:
-                    tempo_estimado_base = self.tipo_servico.tempo_estimado
-                    tempo_extra_safe = self.tempo_extra_minutos if self.tempo_extra_minutos is not None else 0
-                    tempo_estimado_total = tempo_estimado_base + tempo_extra_safe
-                    
-                    if tempo_estimado_total > 0:
-                        tempo_restante = max(0, tempo_estimado_total - tempo_execucao_efetivo)
-                        percentual_conclusao = min(100, max(0, int((tempo_execucao_efetivo / tempo_estimado_total) * 100)))
-                    else:
-                        tempo_restante = 0
-                        percentual_conclusao = 0
-                else:
-                    # Se não tem tipo de serviço, assumir 60 minutos padrão
-                    tempo_estimado_total = 60 + (self.tempo_extra_minutos or 0)
-                    tempo_restante = max(0, tempo_estimado_total - tempo_execucao_efetivo)
-                    if tempo_estimado_total > 0:
-                        percentual_conclusao = min(100, max(0, int((tempo_execucao_efetivo / tempo_estimado_total) * 100)))
-                
-                # Verificar atraso (apenas se não estiver pausado)
-                if self.fim_previsto and self.status == 'em_andamento':
-                    if agora > self.fim_previsto:
-                        em_atraso = True
-                        delta_atraso = agora - self.fim_previsto
-                        tempo_atraso = max(0, int(delta_atraso.total_seconds() / 60))
+            
+            # 2. Obter tempo estimado do tipo de serviço
+            if self.tipo_servico and hasattr(self.tipo_servico, 'tempo_estimado'):
+                tempo_estimado_base = self.tipo_servico.tempo_estimado or 60
+            else:
+                tempo_estimado_base = 60
+            
+            tempo_extra_safe = self.tempo_extra_minutos or 0
+            tempo_estimado_total = tempo_estimado_base + tempo_extra_safe
+            
+            # 3. Calcular tempo pausado atual se estiver pausado
+            tempo_pausado_atual = 0
+            if self.status == 'pausado' and self.pausado_em:
+                delta_pausa = agora - self.pausado_em
+                tempo_pausado_atual = max(0, int(delta_pausa.total_seconds() / 60))
+            
+            # 4. Calcular tempo efetivo de execução
+            tempo_pausado_total_safe = self.tempo_pausado_total or 0
+            tempo_execucao_efetivo = tempo_decorrido_total - tempo_pausado_total_safe - tempo_pausado_atual
+            tempo_execucao_efetivo = max(0, tempo_execucao_efetivo)
+            
+            # 5. Calcular tempo restante e percentual
+            if tempo_estimado_total > 0:
+                tempo_restante = max(0, tempo_estimado_total - tempo_execucao_efetivo)
+                percentual_conclusao = min(100, max(0, int((tempo_execucao_efetivo / tempo_estimado_total) * 100)))
+            
+            # 6. Verificar atraso (apenas se não estiver pausado)
+            if self.fim_previsto and self.status == 'em_andamento':
+                if agora > self.fim_previsto:
+                    em_atraso = True
+                    delta_atraso = agora - self.fim_previsto
+                    tempo_atraso = max(0, int(delta_atraso.total_seconds() / 60))
         
         except Exception as e:
-            # Em caso de qualquer erro, usar valores padrão seguros
             print(f"Erro no cálculo de tempo para serviço {self.id}: {e}")
-            tempo_decorrido_total = 0
-            tempo_execucao_efetivo = 0
-            tempo_restante = 0
-            percentual_conclusao = 0
-            em_atraso = False
-            tempo_atraso = 0
+            # Manter valores padrão seguros em caso de erro
         
-        # Garantir que todos os valores são números válidos
-        tempo_decorrido_total = int(tempo_decorrido_total) if tempo_decorrido_total is not None else 0
-        tempo_execucao_efetivo = int(tempo_execucao_efetivo) if tempo_execucao_efetivo is not None else 0
-        tempo_restante = int(tempo_restante) if tempo_restante is not None else 0
-        percentual_conclusao = int(percentual_conclusao) if percentual_conclusao is not None else 0
-        tempo_atraso = int(tempo_atraso) if tempo_atraso is not None else 0
+        # Garantir que todos os valores são válidos
+        def safe_int(value, default=0):
+            try:
+                return int(float(value)) if value is not None and str(value).lower() not in ['nan', 'none', 'null', ''] else default
+            except (ValueError, TypeError):
+                return default
+        
+        tempo_decorrido_total = safe_int(tempo_decorrido_total)
+        tempo_execucao_efetivo = safe_int(tempo_execucao_efetivo)
+        tempo_restante = safe_int(tempo_restante)
+        percentual_conclusao = safe_int(percentual_conclusao)
+        tempo_atraso = safe_int(tempo_atraso)
+        tempo_estimado_total = safe_int(tempo_estimado_total, 60)
         
         return {
             'id': self.id,
@@ -128,8 +126,8 @@ class ServicoExecucao(db.Model):
             'fim_previsto': self.fim_previsto.isoformat() if self.fim_previsto else None,
             'fim_real': self.fim_real.isoformat() if self.fim_real else None,
             'pausado_em': self.pausado_em.isoformat() if self.pausado_em else None,
-            'tempo_extra_minutos': self.tempo_extra_minutos if self.tempo_extra_minutos is not None else 0,
-            'tempo_pausado_total': self.tempo_pausado_total if self.tempo_pausado_total is not None else 0,
+            'tempo_extra_minutos': safe_int(self.tempo_extra_minutos),
+            'tempo_pausado_total': safe_int(self.tempo_pausado_total),
             'motivo_tempo_extra': self.motivo_tempo_extra,
             'nome_cliente': self.nome_cliente,
             'telefone_cliente': self.telefone_cliente,
@@ -143,35 +141,44 @@ class ServicoExecucao(db.Model):
             'atualizado_em': self.atualizado_em.isoformat() if self.atualizado_em else None,
             'historico_pausas': self.historico_pausas,
             
-            # Informações calculadas - SEMPRE números válidos (anti-NaN)
+            # INFORMAÇÕES CALCULADAS - SEMPRE NÚMEROS VÁLIDOS
             'tempo_decorrido_total_minutos': tempo_decorrido_total,
             'tempo_execucao_efetivo_minutos': tempo_execucao_efetivo,
             'tempo_restante_minutos': tempo_restante,
+            'tempo_estimado_total_minutos': tempo_estimado_total,
             'percentual_conclusao': percentual_conclusao,
             'em_atraso': bool(em_atraso),
             'tempo_atraso_minutos': tempo_atraso,
             
-            # Formatação amigável
+            # FORMATAÇÃO AMIGÁVEL
             'tempo_decorrido_formatado': self._formatar_tempo_seguro(tempo_decorrido_total),
             'tempo_execucao_formatado': self._formatar_tempo_seguro(tempo_execucao_efetivo),
             'tempo_restante_formatado': self._formatar_tempo_seguro(tempo_restante),
+            'tempo_estimado_formatado': self._formatar_tempo_seguro(tempo_estimado_total),
             'tempo_atraso_formatado': self._formatar_tempo_seguro(tempo_atraso) if em_atraso else None,
             
-            # Horários formatados
+            # HORÁRIOS FORMATADOS
             'horario_inicio': self.inicio.strftime('%H:%M') if self.inicio else None,
             'horario_fim_previsto': self.fim_previsto.strftime('%H:%M') if self.fim_previsto else None,
             'horario_fim_real': self.fim_real.strftime('%H:%M') if self.fim_real else None,
             
-            # Relacionamentos (com proteção contra None)
+            # RELACIONAMENTOS SEGUROS
             'box': self._safe_relationship_dict(self.box),
             'mecanico': self._safe_relationship_dict(self.mecanico),
-            'tipo_servico': self._safe_relationship_dict(self.tipo_servico)
+            'tipo_servico': self._safe_relationship_dict(self.tipo_servico),
+            
+            # CAMPOS ESPECÍFICOS PARA O DASHBOARD
+            'pode_pausar': self.status == 'em_andamento',
+            'pode_despausar': self.status == 'pausado',
+            'pode_finalizar': self.status in ['em_andamento', 'pausado'],
+            'esta_pausado': self.status == 'pausado',
+            'esta_em_andamento': self.status == 'em_andamento',
+            'esta_concluido': self.status == 'concluido'
         }
     
     def _formatar_tempo_seguro(self, minutos):
-        """Formata tempo em minutos de forma segura (anti-NaN)"""
+        """Formata tempo em minutos de forma segura"""
         try:
-            # Converter para int e garantir que não é None/NaN
             minutos_int = int(float(minutos)) if minutos is not None and str(minutos).lower() not in ['nan', 'none', ''] else 0
             
             if minutos_int <= 0:
@@ -185,7 +192,7 @@ class ServicoExecucao(db.Model):
                     return f"{horas}h"
                 else:
                     return f"{horas}h {mins}min"
-        except (ValueError, TypeError, ZeroDivisionError):
+        except (ValueError, TypeError):
             return "0min"
     
     def _safe_relationship_dict(self, relationship):
@@ -193,14 +200,17 @@ class ServicoExecucao(db.Model):
         try:
             if relationship and hasattr(relationship, 'to_dict'):
                 return relationship.to_dict()
-            elif relationship and hasattr(relationship, 'id'):
-                return {'id': relationship.id}
-            else:
-                return None
-        except:
+            elif relationship:
+                # Fallback básico
+                return {
+                    'id': getattr(relationship, 'id', None),
+                    'nome': getattr(relationship, 'nome', None)
+                }
+            return None
+        except Exception:
             return None
     
-    def pausar_seguro(self, motivo=None):
+    def pausar_servico(self, motivo=None):
         """Pausa o serviço de forma segura"""
         if self.status != 'em_andamento':
             raise ValueError('Serviço não está em andamento')
@@ -209,9 +219,14 @@ class ServicoExecucao(db.Model):
         self.status = 'pausado'
         self.pausado_em = agora
         self.atualizado_em = agora
+        
+        # Adicionar ao histórico de pausas
+        if motivo:
+            self._adicionar_historico_pausa(agora, motivo)
+        
         return agora
     
-    def despausar_seguro(self):
+    def despausar_servico(self):
         """Retoma o serviço de forma segura"""
         if self.status != 'pausado':
             raise ValueError('Serviço não está pausado')
@@ -232,6 +247,9 @@ class ServicoExecucao(db.Model):
             # Ajustar fim previsto
             if self.fim_previsto:
                 self.fim_previsto = self.fim_previsto + (agora - self.pausado_em)
+            
+            # Finalizar entrada no histórico
+            self._finalizar_historico_pausa(tempo_pausado_minutos)
         
         self.status = 'em_andamento'
         self.pausado_em = None
@@ -239,7 +257,7 @@ class ServicoExecucao(db.Model):
         
         return tempo_pausado_minutos
     
-    def finalizar_seguro(self):
+    def finalizar_servico(self, observacoes_finais=None):
         """Finaliza o serviço de forma segura"""
         if self.status not in ['em_andamento', 'pausado']:
             raise ValueError('Serviço não pode ser finalizado')
@@ -252,6 +270,14 @@ class ServicoExecucao(db.Model):
             if self.tempo_pausado_total is None:
                 self.tempo_pausado_total = 0
             self.tempo_pausado_total += tempo_pausado
+            self._finalizar_historico_pausa(tempo_pausado)
+        
+        # Adicionar observações finais
+        if observacoes_finais:
+            if self.observacoes:
+                self.observacoes += f"\n\nObservações finais: {observacoes_finais}"
+            else:
+                self.observacoes = f"Observações finais: {observacoes_finais}"
         
         self.fim_real = agora
         self.status = 'concluido'
@@ -259,3 +285,45 @@ class ServicoExecucao(db.Model):
         self.atualizado_em = agora
         
         return agora
+    
+    def _adicionar_historico_pausa(self, momento, motivo):
+        """Adiciona entrada no histórico de pausas"""
+        try:
+            if self.historico_pausas:
+                historico = json.loads(self.historico_pausas)
+            else:
+                historico = []
+            
+            entrada = {
+                'inicio': momento.isoformat(),
+                'motivo': motivo or 'Não informado',
+                'duracao_minutos': None  # Será preenchido quando despausar
+            }
+            
+            historico.append(entrada)
+            self.historico_pausas = json.dumps(historico)
+        except Exception:
+            # Se falhar, continuar sem histórico
+            pass
+    
+    def _finalizar_historico_pausa(self, duracao_minutos):
+        """Finaliza última entrada no histórico de pausas"""
+        try:
+            if self.historico_pausas:
+                historico = json.loads(self.historico_pausas)
+                if historico and historico[-1].get('duracao_minutos') is None:
+                    historico[-1]['duracao_minutos'] = duracao_minutos
+                    self.historico_pausas = json.dumps(historico)
+        except Exception:
+            # Se falhar, continuar sem histórico
+            pass
+    
+    def calcular_tempo_total_estimado(self):
+        """Calcula o tempo total estimado incluindo tempo extra"""
+        if self.tipo_servico and hasattr(self.tipo_servico, 'tempo_estimado'):
+            tempo_base = self.tipo_servico.tempo_estimado or 60
+        else:
+            tempo_base = 60
+        
+        tempo_extra = self.tempo_extra_minutos or 0
+        return tempo_base + tempo_extra
