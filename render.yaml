@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sistema-mecanica
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+    healthCheckPath: /health
+
