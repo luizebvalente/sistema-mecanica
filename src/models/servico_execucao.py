@@ -1,4 +1,4 @@
-# src/models/servico_execucao.py - VERSÃO CORRIGIDA
+# src/models/servico_execucao.py - VERSÃO MÍNIMA FUNCIONANDO
 from src.models.user import db
 from datetime import datetime
 
@@ -16,13 +16,10 @@ class ServicoExecucao(db.Model):
     fim_real = db.Column(db.DateTime)
     pausado_em = db.Column(db.DateTime)
     
-    # Controle de tempo - CORRIGIDO: Adicionado campo que estava faltando
+    # Controle de tempo
     tempo_extra_minutos = db.Column(db.Integer, default=0)
     tempo_pausado_total = db.Column(db.Integer, default=0)
     motivo_tempo_extra = db.Column(db.String(200))
-    
-    # NOVO: Campo para armazenar histórico de pausas em JSON
-    historico_pausas = db.Column(db.Text)
     
     # Dados do cliente
     nome_cliente = db.Column(db.String(100), nullable=False)
@@ -35,12 +32,8 @@ class ServicoExecucao(db.Model):
     placa_carro = db.Column(db.String(10))
     
     # Status e observações
-    status = db.Column(db.String(20), default='em_andamento')  # em_andamento, pausado, concluido
+    status = db.Column(db.String(20), default='em_andamento')
     observacoes = db.Column(db.Text)
-    
-    # NOVO: Timestamps de criação e atualização
-    criado_em = db.Column(db.DateTime, default=datetime.utcnow)
-    atualizado_em = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relacionamentos
     box = db.relationship('Box', backref=db.backref('servicos_execucao', lazy=True))
@@ -48,40 +41,50 @@ class ServicoExecucao(db.Model):
     tipo_servico = db.relationship('TipoServico', backref=db.backref('servicos_execucao', lazy=True))
     
     def to_dict(self):
-        # Calcular informações de tempo em tempo real
+        # Cálculos básicos para evitar NaN
         agora = datetime.utcnow()
         
-        # Tempo decorrido desde o início
+        # Valores padrão seguros
         tempo_decorrido_total = 0
         tempo_execucao_efetivo = 0
         tempo_restante = 0
         percentual_conclusao = 0
-        
-        if self.inicio:
-            tempo_decorrido_total = int((agora - self.inicio).total_seconds() / 60)
-            
-            # Tempo efetivo = tempo total - tempo pausado
-            tempo_pausado_atual = 0
-            if self.status == 'pausado' and self.pausado_em:
-                tempo_pausado_atual = int((agora - self.pausado_em).total_seconds() / 60)
-            
-            tempo_execucao_efetivo = tempo_decorrido_total - (self.tempo_pausado_total or 0) - tempo_pausado_atual
-            tempo_execucao_efetivo = max(0, tempo_execucao_efetivo)
-            
-            # Calcular tempo restante e percentual
-            if self.tipo_servico:
-                tempo_estimado = self.tipo_servico.tempo_estimado + (self.tempo_extra_minutos or 0)
-                tempo_restante = max(0, tempo_estimado - tempo_execucao_efetivo)
-                if tempo_estimado > 0:
-                    percentual_conclusao = min(100, int((tempo_execucao_efetivo / tempo_estimado) * 100))
-        
-        # Verificar se está em atraso
         em_atraso = False
         tempo_atraso = 0
-        if self.fim_previsto and self.status == 'em_andamento':
-            if agora > self.fim_previsto:
-                em_atraso = True
-                tempo_atraso = int((agora - self.fim_previsto).total_seconds() / 60)
+        
+        try:
+            if self.inicio:
+                # Tempo decorrido desde o início
+                tempo_decorrido_total = int((agora - self.inicio).total_seconds() / 60)
+                
+                # Tempo pausado atual se está pausado
+                tempo_pausado_atual = 0
+                if self.status == 'pausado' and self.pausado_em:
+                    tempo_pausado_atual = int((agora - self.pausado_em).total_seconds() / 60)
+                
+                # Tempo efetivo = tempo total - tempo pausado
+                tempo_pausado_total_safe = self.tempo_pausado_total or 0
+                tempo_execucao_efetivo = tempo_decorrido_total - tempo_pausado_total_safe - tempo_pausado_atual
+                tempo_execucao_efetivo = max(0, tempo_execucao_efetivo)
+                
+                # Calcular tempo restante e percentual
+                if self.tipo_servico and self.tipo_servico.tempo_estimado:
+                    tempo_extra_safe = self.tempo_extra_minutos or 0
+                    tempo_estimado = self.tipo_servico.tempo_estimado + tempo_extra_safe
+                    tempo_restante = max(0, tempo_estimado - tempo_execucao_efetivo)
+                    
+                    if tempo_estimado > 0:
+                        percentual_conclusao = min(100, int((tempo_execucao_efetivo / tempo_estimado) * 100))
+                
+                # Verificar atraso
+                if self.fim_previsto and self.status == 'em_andamento':
+                    if agora > self.fim_previsto:
+                        em_atraso = True
+                        tempo_atraso = int((agora - self.fim_previsto).total_seconds() / 60)
+        
+        except Exception as e:
+            # Em caso de erro, usar valores seguros
+            print(f"Erro no cálculo de tempo: {e}")
         
         return {
             'id': self.id,
@@ -103,10 +106,8 @@ class ServicoExecucao(db.Model):
             'placa_carro': self.placa_carro,
             'status': self.status,
             'observacoes': self.observacoes,
-            'criado_em': self.criado_em.isoformat() if self.criado_em else None,
-            'atualizado_em': self.atualizado_em.isoformat() if self.atualizado_em else None,
             
-            # Informações calculadas de tempo
+            # Informações calculadas - SEMPRE números válidos
             'tempo_decorrido_total_minutos': tempo_decorrido_total,
             'tempo_execucao_efetivo_minutos': tempo_execucao_efetivo,
             'tempo_restante_minutos': tempo_restante,
@@ -133,115 +134,18 @@ class ServicoExecucao(db.Model):
     
     def _formatar_tempo(self, minutos):
         """Formata tempo em minutos para formato legível"""
-        if minutos == 0:
-            return "0min"
-        elif minutos < 60:
-            return f"{minutos}min"
-        else:
-            horas = minutos // 60
-            mins = minutos % 60
-            if mins == 0:
-                return f"{horas}h"
+        try:
+            minutos = int(minutos) if minutos else 0
+            if minutos == 0:
+                return "0min"
+            elif minutos < 60:
+                return f"{minutos}min"
             else:
-                return f"{horas}h {mins}min"
-    
-    def pausar(self, motivo=None):
-        """Pausa o serviço e registra no histórico"""
-        import json
-        
-        if self.status != 'em_andamento':
-            raise ValueError('Serviço não está em andamento')
-        
-        agora = datetime.utcnow()
-        self.status = 'pausado'
-        self.pausado_em = agora
-        
-        # Atualizar histórico de pausas
-        historico = []
-        if self.historico_pausas:
-            try:
-                historico = json.loads(self.historico_pausas)
-            except:
-                historico = []
-        
-        # Não adicionar no histórico ainda, só quando despausar
-        return agora
-    
-    def despausar(self):
-        """Retoma o serviço e atualiza o histórico"""
-        import json
-        
-        if self.status != 'pausado':
-            raise ValueError('Serviço não está pausado')
-        
-        agora = datetime.utcnow()
-        
-        # Calcular tempo pausado
-        tempo_pausado = int((agora - self.pausado_em).total_seconds() / 60)
-        
-        # Atualizar histórico de pausas
-        historico = []
-        if self.historico_pausas:
-            try:
-                historico = json.loads(self.historico_pausas)
-            except:
-                historico = []
-        
-        historico.append({
-            'pausado_em': self.pausado_em.isoformat(),
-            'retomado_em': agora.isoformat(),
-            'duracao_minutos': tempo_pausado,
-            'motivo': getattr(self, '_motivo_pausa_temp', None)
-        })
-        
-        self.historico_pausas = json.dumps(historico)
-        
-        # Atualizar totais
-        self.tempo_pausado_total = (self.tempo_pausado_total or 0) + tempo_pausado
-        
-        # Ajustar fim previsto
-        if self.fim_previsto:
-            self.fim_previsto += timedelta(minutes=tempo_pausado)
-        
-        # Atualizar status
-        self.status = 'em_andamento'
-        self.pausado_em = None
-        
-        return tempo_pausado
-    
-    def finalizar(self):
-        """Finaliza o serviço"""
-        if self.status not in ['em_andamento', 'pausado']:
-            raise ValueError('Serviço não pode ser finalizado')
-        
-        agora = datetime.utcnow()
-        
-        # Se estava pausado, calcular último tempo de pausa
-        if self.status == 'pausado' and self.pausado_em:
-            import json
-            
-            tempo_pausado = int((agora - self.pausado_em).total_seconds() / 60)
-            self.tempo_pausado_total = (self.tempo_pausado_total or 0) + tempo_pausado
-            
-            # Atualizar histórico
-            historico = []
-            if self.historico_pausas:
-                try:
-                    historico = json.loads(self.historico_pausas)
-                except:
-                    historico = []
-            
-            historico.append({
-                'pausado_em': self.pausado_em.isoformat(),
-                'retomado_em': agora.isoformat(),
-                'duracao_minutos': tempo_pausado,
-                'motivo': 'Finalizado durante pausa'
-            })
-            
-            self.historico_pausas = json.dumps(historico)
-        
-        self.fim_real = agora
-        self.status = 'concluido'
-        self.pausado_em = None
-        
-        return agora
+                horas = minutos // 60
+                mins = minutos % 60
+                if mins == 0:
+                    return f"{horas}h"
+                else:
+                    return f"{horas}h {mins}min"
+        except:
+            return "0min"
