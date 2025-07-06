@@ -13,10 +13,11 @@ def get_painel_data():
         painel_data = []
         
         for box in boxes:
-            # Buscar serviço atual em execução
+            # Buscar serviço atual em execução ou pausado
             servico_atual = ServicoExecucao.query.filter_by(
-                box_id=box.id,
-                status='em_andamento'
+                box_id=box.id
+            ).filter(
+                ServicoExecucao.status.in_(['em_andamento', 'pausado'])
             ).first()
             
             # Buscar fila de serviços para hoje apenas
@@ -33,16 +34,20 @@ def get_painel_data():
             tempo_restante_segundos = 0
             em_atraso = False
             tempo_atraso_segundos = 0
+            pausado = False
             
-            if servico_atual and servico_atual.fim_previsto:
-                agora = datetime.utcnow()
-                delta = servico_atual.fim_previsto - agora
-                tempo_restante_segundos = int(delta.total_seconds())
+            if servico_atual:
+                pausado = servico_atual.status == 'pausado'
                 
-                if tempo_restante_segundos < 0:
-                    em_atraso = True
-                    tempo_atraso_segundos = abs(tempo_restante_segundos)
-                    tempo_restante_segundos = 0
+                if servico_atual.fim_previsto and not pausado:
+                    agora = datetime.utcnow()
+                    delta = servico_atual.fim_previsto - agora
+                    tempo_restante_segundos = int(delta.total_seconds())
+                    
+                    if tempo_restante_segundos < 0:
+                        em_atraso = True
+                        tempo_atraso_segundos = abs(tempo_restante_segundos)
+                        tempo_restante_segundos = 0
             
             # Formatar horários para exibição
             horario_inicio = None
@@ -58,6 +63,7 @@ def get_painel_data():
                 'tempo_restante_segundos': tempo_restante_segundos,
                 'em_atraso': em_atraso,
                 'tempo_atraso_segundos': tempo_atraso_segundos,
+                'pausado': pausado,
                 'horario_inicio': horario_inicio,
                 'horario_fim_previsto': horario_fim_previsto,
                 'total_fila': len(fila_servicos)
@@ -74,10 +80,11 @@ def get_box_detalhes(box_id):
     try:
         box = Box.query.get_or_404(box_id)
         
-        # Buscar serviço atual
+        # Buscar serviço atual (em andamento ou pausado)
         servico_atual = ServicoExecucao.query.filter_by(
-            box_id=box_id,
-            status='em_andamento'
+            box_id=box_id
+        ).filter(
+            ServicoExecucao.status.in_(['em_andamento', 'pausado'])
         ).first()
         
         # Buscar fila completa para hoje
@@ -100,16 +107,20 @@ def get_box_detalhes(box_id):
         tempo_restante_segundos = 0
         em_atraso = False
         tempo_atraso_segundos = 0
+        pausado = False
         
-        if servico_atual and servico_atual.fim_previsto:
-            agora = datetime.utcnow()
-            delta = servico_atual.fim_previsto - agora
-            tempo_restante_segundos = int(delta.total_seconds())
+        if servico_atual:
+            pausado = servico_atual.status == 'pausado'
             
-            if tempo_restante_segundos < 0:
-                em_atraso = True
-                tempo_atraso_segundos = abs(tempo_restante_segundos)
-                tempo_restante_segundos = 0
+            if servico_atual.fim_previsto and not pausado:
+                agora = datetime.utcnow()
+                delta = servico_atual.fim_previsto - agora
+                tempo_restante_segundos = int(delta.total_seconds())
+                
+                if tempo_restante_segundos < 0:
+                    em_atraso = True
+                    tempo_atraso_segundos = abs(tempo_restante_segundos)
+                    tempo_restante_segundos = 0
         
         return jsonify({
             'box': box.to_dict(),
@@ -119,6 +130,7 @@ def get_box_detalhes(box_id):
             'tempo_restante_segundos': tempo_restante_segundos,
             'em_atraso': em_atraso,
             'tempo_atraso_segundos': tempo_atraso_segundos,
+            'pausado': pausado,
             'horario_inicio': servico_atual.inicio.strftime('%H:%M') if servico_atual and servico_atual.inicio else None,
             'horario_fim_previsto': servico_atual.fim_previsto.strftime('%H:%M') if servico_atual and servico_atual.fim_previsto else None,
             'total_fila': len(fila_servicos)
@@ -126,3 +138,24 @@ def get_box_detalhes(box_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@painel_bp.route('/painel/servicos-pausados', methods=['GET'])
+def get_servicos_pausados():
+    """Retorna todos os serviços pausados do sistema"""
+    try:
+        servicos_pausados = ServicoExecucao.query.filter_by(status='pausado').all()
+        
+        servicos_data = []
+        for servico in servicos_pausados:
+            # Calcular tempo que está pausado
+            tempo_pausado_atual = 0
+            if servico.pausado_em:
+                delta = datetime.utcnow() - servico.pausado_em
+                tempo_pausado_atual = int(delta.total_seconds() / 60)  # em minutos
+            
+            servico_data = servico.to_dict()
+            servico_data['tempo_pausado_atual_minutos'] = tempo_pausado_atual
+            servicos_data.append(servico_data)
+        
+        return jsonify(servicos_data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
