@@ -553,3 +553,200 @@ def formatar_tempo_minutos(minutos):
             return f"{horas}h"
         else:
             return f"{horas}h {mins}min"
+
+# Adicione esta rota temporária em src/routes/servico_execucao.py
+
+@servico_execucao_bp.route('/corrigir-banco-dados', methods=['POST'])
+def corrigir_banco_dados():
+    """ENDPOINT TEMPORÁRIO - Corrige problemas no banco de dados"""
+    try:
+        data = request.get_json() or {}
+        senha = data.get('senha', '')
+        
+        # Senha de segurança
+        if senha != 'corrigir2025':
+            return jsonify({'erro': 'Senha necessária para correção'}), 401
+        
+        from sqlalchemy import text
+        correcoes = []
+        
+        # 1. Verificar e adicionar campos faltantes na tabela servico_execucao
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo criado_em verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo criado_em: {str(e)}')
+        
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo atualizado_em verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo atualizado_em: {str(e)}')
+        
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS historico_pausas TEXT'))
+            correcoes.append('✅ Campo historico_pausas verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo historico_pausas: {str(e)}')
+        
+        # 2. Corrigir valores NULL que causam NaN
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET tempo_pausado_total = 0 
+                WHERE tempo_pausado_total IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_pausado_total NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro tempo_pausado_total: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET tempo_extra_minutos = 0 
+                WHERE tempo_extra_minutos IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_extra_minutos NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro tempo_extra_minutos: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET criado_em = inicio 
+                WHERE criado_em IS NULL AND inicio IS NOT NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros criado_em NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro criado_em: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET atualizado_em = COALESCE(fim_real, pausado_em, inicio, CURRENT_TIMESTAMP) 
+                WHERE atualizado_em IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros atualizado_em NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro atualizado_em: {e}')
+        
+        # 3. Corrigir inconsistências de status que causam problemas
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET status = 'em_andamento', pausado_em = NULL 
+                WHERE status = 'pausado' AND pausado_em IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} serviços pausados sem data de pausa')
+        except Exception as e:
+            correcoes.append(f'❌ Erro status pausado: {e}')
+        
+        # 4. Sincronizar status dos boxes
+        try:
+            # Liberar boxes que não têm serviço ativo
+            result = db.session.execute(text('''
+                UPDATE box 
+                SET status = 'livre' 
+                WHERE status = 'ocupado' 
+                AND id NOT IN (
+                    SELECT DISTINCT box_id 
+                    FROM servico_execucao 
+                    WHERE status IN ('em_andamento', 'pausado')
+                )
+            '''))
+            correcoes.append(f'✅ Liberados {result.rowcount} boxes sem serviço ativo')
+        except Exception as e:
+            correcoes.append(f'❌ Erro sincronização boxes: {e}')
+        
+        try:
+            # Ocupar boxes que têm serviço ativo
+            result = db.session.execute(text('''
+                UPDATE box 
+                SET status = 'ocupado' 
+                WHERE status = 'livre' 
+                AND id IN (
+                    SELECT DISTINCT box_id 
+                    FROM servico_execucao 
+                    WHERE status IN ('em_andamento', 'pausado')
+                )
+            '''))
+            correcoes.append(f'✅ Ocupados {result.rowcount} boxes com serviço ativo')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ocupação boxes: {e}')
+        
+        # 5. Corrigir fim_previsto para serviços sem essa informação
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao se
+                SET fim_previsto = se.inicio + INTERVAL '1 hour' * (
+                    COALESCE(ts.tempo_estimado, 60) + COALESCE(se.tempo_extra_minutos, 0)
+                ) / 60
+                FROM tipo_servico ts
+                WHERE se.tipo_servico_id = ts.id 
+                AND se.fim_previsto IS NULL 
+                AND se.inicio IS NOT NULL
+                AND se.status IN ('em_andamento', 'pausado')
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros fim_previsto NULL')
+        except Exception as e:
+            # Fallback para bancos que não suportam INTERVAL
+            try:
+                result = db.session.execute(text('''
+                    UPDATE servico_execucao 
+                    SET fim_previsto = datetime(inicio, '+60 minutes')
+                    WHERE fim_previsto IS NULL 
+                    AND inicio IS NOT NULL
+                    AND status IN ('em_andamento', 'pausado')
+                '''))
+                correcoes.append(f'✅ Corrigidos {result.rowcount} registros fim_previsto NULL (fallback)')
+            except Exception as e2:
+                correcoes.append(f'❌ Erro fim_previsto: {e} / {e2}')
+        
+        # 6. Commit das alterações
+        db.session.commit()
+        
+        # 7. Verificar resultado final
+        try:
+            result = db.session.execute(text('SELECT COUNT(*) FROM servico_execucao')).fetchone()
+            total_servicos = result[0] if result else 0
+            
+            result = db.session.execute(text('''
+                SELECT COUNT(*) FROM servico_execucao 
+                WHERE tempo_pausado_total IS NOT NULL 
+                AND tempo_extra_minutos IS NOT NULL
+            ''')).fetchone()
+            registros_validos = result[0] if result else 0
+            
+            result = db.session.execute(text('''
+                SELECT COUNT(*) FROM servico_execucao 
+                WHERE status IN ('em_andamento', 'pausado')
+            ''')).fetchone()
+            servicos_ativos = result[0] if result else 0
+            
+            correcoes.append(f'📊 Total de serviços: {total_servicos}')
+            correcoes.append(f'📊 Registros com dados válidos: {registros_validos}')
+            correcoes.append(f'📊 Serviços ativos: {servicos_ativos}')
+            
+        except Exception as e:
+            correcoes.append(f'❌ Erro na verificação final: {e}')
+        
+        return jsonify({
+            'status': 'sucesso',
+            'correcoes': correcoes,
+            'timestamp': datetime.utcnow().isoformat(),
+            'instrucoes': [
+                '1. Substitua o arquivo src/models/servico_execucao.py pelo código corrigido',
+                '2. Reinicie a aplicação',
+                '3. Teste o dashboard novamente',
+                '4. Este endpoint pode ser removido após a correção'
+            ]
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'erro_critico',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat(),
+            'correcoes': correcoes if 'correcoes' in locals() else []
+        }), 500
