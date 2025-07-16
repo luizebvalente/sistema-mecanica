@@ -53,15 +53,14 @@ class ServicoExecucao(db.Model):
 
     # PATCH PARA CORREÇÃO DO BACKEND - Cálculos de Tempo Seguros
 # Aplicar essas correções no arquivo src/models/servico_execucao.py
-
-def to_dict(self):
+       def to_dict(self):
     """Converte para dict com cálculos ULTRA seguros - VERSÃO FINAL CORRIGIDA"""
-    agora = datetime.utcnow()
+          agora = datetime.utcnow()
     
     # Função auxiliar para garantir valores numéricos válidos
-    def safe_number(value, default=0):
+            def safe_number(value, default=0):
         """Converte qualquer valor para número válido"""
-        try:
+            try:
             if value is None:
                 return default
             if isinstance(value, (int, float)):
@@ -79,8 +78,8 @@ def to_dict(self):
                     if math.isnan(num) or math.isinf(num):
                         return default
                     return max(0, int(num))
-            return default
-        except (ValueError, TypeError, AttributeError):
+                return default
+              except (ValueError, TypeError, AttributeError):
             return default
     
     # Função auxiliar para diferença de tempo segura
