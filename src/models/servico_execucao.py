@@ -1,503 +1,1048 @@
-# src/models/servico_execucao.py - VERSÃO CORRIGIDA COMPLETA
+# src/routes/servico_execucao.py - VERSÃO CORRIGIDA SEM ERROS DE SINTAXE
+from flask import Blueprint, request, jsonify
 from src.models.user import db
-from datetime import datetime
-import json
-import math
+from src.models.servico_execucao import ServicoExecucao
+from src.models.box import Box
+from src.models.tipo_servico import TipoServico
+from src.models.fila_servico import FilaServico
+from datetime import datetime, timedelta
 
+servico_execucao_bp = Blueprint('servico_execucao', __name__)
 
-class ServicoExecucao(db.Model):
-    __tablename__ = 'servico_execucao'
-    
-    id = db.Column(db.Integer, primary_key=True)
-    box_id = db.Column(db.Integer, db.ForeignKey('box.id'), nullable=False)
-    mecanico_id = db.Column(db.Integer, db.ForeignKey('mecanico.id'), nullable=False)
-    tipo_servico_id = db.Column(db.Integer, db.ForeignKey('tipo_servico.id'), nullable=False)
-    
-    # Horários
-    inicio = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    fim_previsto = db.Column(db.DateTime)
-    fim_real = db.Column(db.DateTime)
-    pausado_em = db.Column(db.DateTime)
-    
-    # Controle de tempo
-    tempo_extra_minutos = db.Column(db.Integer, default=0)
-    tempo_pausado_total = db.Column(db.Integer, default=0)
-    motivo_tempo_extra = db.Column(db.String(200))
-    
-    # Timestamps
-    criado_em = db.Column(db.DateTime, default=datetime.utcnow)
-    atualizado_em = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Histórico de pausas
-    historico_pausas = db.Column(db.Text)
-    
-    # Dados do cliente
-    nome_cliente = db.Column(db.String(100), nullable=False)
-    telefone_cliente = db.Column(db.String(20))
-    
-    # Dados do veículo
-    marca_carro = db.Column(db.String(50), nullable=False)
-    modelo_carro = db.Column(db.String(50), nullable=False)
-    cor_carro = db.Column(db.String(30))
-    placa_carro = db.Column(db.String(10))
-    
-    # Status e observações
-    status = db.Column(db.String(20), default='em_andamento')
-    observacoes = db.Column(db.Text)
-    
-    # Relacionamentos
-    box = db.relationship('Box', backref=db.backref('servicos_execucao', lazy=True))
-    mecanico = db.relationship('Mecanico', backref=db.backref('servicos_execucao', lazy=True))
-    tipo_servico = db.relationship('TipoServico', backref=db.backref('servicos_execucao', lazy=True))
-    
-
-    # PATCH PARA CORREÇÃO DO BACKEND - Cálculos de Tempo Seguros
-# Aplicar essas correções no arquivo src/models/servico_execucao.py
-       def to_dict(self):
-    """Converte para dict com cálculos ULTRA seguros - VERSÃO FINAL CORRIGIDA"""
-          agora = datetime.utcnow()
-    
-    # Função auxiliar para garantir valores numéricos válidos
-            def safe_number(value, default=0):
-        """Converte qualquer valor para número válido"""
-            try:
-            if value is None:
-                return default
-            if isinstance(value, (int, float)):
-                if math.isnan(value) or math.isinf(value):
-                    return default
-                return max(0, int(value))
-            if isinstance(value, str):
-                if value.lower() in ['nan', 'none', 'null', '', 'undefined']:
-                    return default
-                # Tentar extrair número da string
-                import re
-                numbers = re.findall(r'-?\d+\.?\d*', value)
-                if numbers:
-                    num = float(numbers[0])
-                    if math.isnan(num) or math.isinf(num):
-                        return default
-                    return max(0, int(num))
-                return default
-              except (ValueError, TypeError, AttributeError):
-            return default
-    
-    # Função auxiliar para diferença de tempo segura
-    def safe_time_diff(start_time, end_time=None):
-        """Calcula diferença de tempo de forma segura"""
-        try:
-            if not start_time:
-                return 0
-            if not isinstance(start_time, datetime):
-                return 0
-            
-            end = end_time if end_time else agora
-            if not isinstance(end, datetime):
-                return 0
-                
-            delta = end - start_time
-            minutes = delta.total_seconds() / 60
-            return safe_number(minutes)
-        except Exception:
-            return 0
-    
-    # INICIALIZAR TODOS OS VALORES COM PADRÕES SEGUROS
-    tempo_decorrido_total = 0
-    tempo_execucao_efetivo = 0
-    tempo_restante = 0
-    percentual_conclusao = 0
-    em_atraso = False
-    tempo_atraso = 0
-    tempo_estimado_total = 60  # Default mínimo
-    
+@servico_execucao_bp.route('/servicos-execucao', methods=['GET'])
+def get_servicos_execucao():
     try:
-        # 1. Calcular tempo decorrido total desde o início
-        if self.inicio:
-            tempo_decorrido_total = safe_time_diff(self.inicio, agora)
-        
-        # 2. Obter tempo estimado do tipo de serviço de forma segura
-        tempo_estimado_base = 60  # Default
-        if self.tipo_servico:
-            if hasattr(self.tipo_servico, 'tempo_estimado') and self.tipo_servico.tempo_estimado:
-                tempo_estimado_base = safe_number(self.tipo_servico.tempo_estimado, 60)
-        
-        tempo_extra_safe = safe_number(self.tempo_extra_minutos)
-        tempo_estimado_total = tempo_estimado_base + tempo_extra_safe
-        
-        # Garantir tempo mínimo
-        if tempo_estimado_total <= 0:
-            tempo_estimado_total = 60
-        
-        # 3. Calcular tempo pausado atual se estiver pausado
-        tempo_pausado_atual = 0
-        if self.status == 'pausado' and self.pausado_em:
-            tempo_pausado_atual = safe_time_diff(self.pausado_em, agora)
-        
-        # 4. Calcular tempo efetivo de execução
-        tempo_pausado_total_safe = safe_number(self.tempo_pausado_total)
-        tempo_execucao_efetivo = tempo_decorrido_total - tempo_pausado_total_safe - tempo_pausado_atual
-        tempo_execucao_efetivo = max(0, tempo_execucao_efetivo)
-        
-        # 5. Calcular tempo restante e percentual
-        tempo_restante = max(0, tempo_estimado_total - tempo_execucao_efetivo)
-        
-        # Percentual com proteção contra divisão por zero
-        if tempo_estimado_total > 0:
-            percentual_bruto = (tempo_execucao_efetivo / tempo_estimado_total) * 100
-            percentual_conclusao = max(0, min(100, safe_number(percentual_bruto)))
-        
-        # 6. Verificar atraso (apenas se não estiver pausado)
-        if self.fim_previsto and self.status == 'em_andamento':
-            if agora > self.fim_previsto:
-                em_atraso = True
-                tempo_atraso = safe_time_diff(self.fim_previsto, agora)
-    
-    except Exception as e:
-        print(f"ERRO CRÍTICO no cálculo de tempo para serviço {self.id}: {e}")
-        # Manter valores padrão seguros em caso de erro crítico
-        import traceback
-        traceback.print_exc()
-    
-    # VALIDAÇÃO FINAL DE TODOS OS VALORES
-    tempo_decorrido_total = safe_number(tempo_decorrido_total)
-    tempo_execucao_efetivo = safe_number(tempo_execucao_efetivo)
-    tempo_restante = safe_number(tempo_restante)
-    percentual_conclusao = safe_number(percentual_conclusao)
-    tempo_atraso = safe_number(tempo_atraso)
-    tempo_estimado_total = max(1, safe_number(tempo_estimado_total, 60))  # Mínimo 1 minuto
-    
-    # DADOS BÁSICOS SEGUROS
-    basic_data = {
-        'id': safe_number(self.id) if self.id else 0,
-        'box_id': safe_number(self.box_id) if self.box_id else 0,
-        'mecanico_id': safe_number(self.mecanico_id) if self.mecanico_id else 0,
-        'tipo_servico_id': safe_number(self.tipo_servico_id) if self.tipo_servico_id else 0,
-        'tempo_extra_minutos': safe_number(self.tempo_extra_minutos),
-        'tempo_pausado_total': safe_number(self.tempo_pausado_total),
-        'motivo_tempo_extra': str(self.motivo_tempo_extra) if self.motivo_tempo_extra else '',
-        'nome_cliente': str(self.nome_cliente) if self.nome_cliente else '',
-        'telefone_cliente': str(self.telefone_cliente) if self.telefone_cliente else '',
-        'marca_carro': str(self.marca_carro) if self.marca_carro else '',
-        'modelo_carro': str(self.modelo_carro) if self.modelo_carro else '',
-        'cor_carro': str(self.cor_carro) if self.cor_carro else '',
-        'placa_carro': str(self.placa_carro) if self.placa_carro else '',
-        'status': str(self.status) if self.status else 'em_andamento',
-        'observacoes': str(self.observacoes) if self.observacoes else '',
-        'historico_pausas': str(self.historico_pausas) if self.historico_pausas else '[]',
-    }
-    
-    # DATAS SEGURAS
-    date_data = {
-        'inicio': self.inicio.isoformat() if self.inicio else None,
-        'fim_previsto': self.fim_previsto.isoformat() if self.fim_previsto else None,
-        'fim_real': self.fim_real.isoformat() if self.fim_real else None,
-        'pausado_em': self.pausado_em.isoformat() if self.pausado_em else None,
-        'criado_em': self.criado_em.isoformat() if self.criado_em else None,
-        'atualizado_em': self.atualizado_em.isoformat() if self.atualizado_em else None,
-    }
-    
-    # HORÁRIOS FORMATADOS SEGUROS
-    horarios_data = {
-        'horario_inicio': self.inicio.strftime('%H:%M') if self.inicio else None,
-        'horario_fim_previsto': self.fim_previsto.strftime('%H:%M') if self.fim_previsto else None,
-        'horario_fim_real': self.fim_real.strftime('%H:%M') if self.fim_real else None,
-    }
-    
-    # CÁLCULOS SEGUROS - SEMPRE NÚMEROS VÁLIDOS
-    calculos_data = {
-        'tempo_decorrido_total_minutos': tempo_decorrido_total,
-        'tempo_execucao_efetivo_minutos': tempo_execucao_efetivo,
-        'tempo_restante_minutos': tempo_restante,
-        'tempo_estimado_total_minutos': tempo_estimado_total,
-        'percentual_conclusao': percentual_conclusao,
-        'em_atraso': bool(em_atraso),
-        'tempo_atraso_minutos': tempo_atraso,
-    }
-    
-    # FORMATAÇÃO AMIGÁVEL SEGURA
-    formatacao_data = {
-        'tempo_decorrido_formatado': self._formatar_tempo_ultra_seguro(tempo_decorrido_total),
-        'tempo_execucao_formatado': self._formatar_tempo_ultra_seguro(tempo_execucao_efetivo),
-        'tempo_restante_formatado': self._formatar_tempo_ultra_seguro(tempo_restante),
-        'tempo_estimado_formatado': self._formatar_tempo_ultra_seguro(tempo_estimado_total),
-        'tempo_atraso_formatado': self._formatar_tempo_ultra_seguro(tempo_atraso) if em_atraso else None,
-    }
-    
-    # RELACIONAMENTOS SEGUROS
-    relacionamentos_data = {
-        'box': self._safe_relationship_dict_ultra(self.box),
-        'mecanico': self._safe_relationship_dict_ultra(self.mecanico),
-        'tipo_servico': self._safe_relationship_dict_ultra(self.tipo_servico),
-    }
-    
-    # CAMPOS ESPECÍFICOS PARA O DASHBOARD
-    dashboard_data = {
-        'pode_pausar': self.status == 'em_andamento',
-        'pode_despausar': self.status == 'pausado',
-        'pode_finalizar': self.status in ['em_andamento', 'pausado'],
-        'esta_pausado': self.status == 'pausado',
-        'esta_em_andamento': self.status == 'em_andamento',
-        'esta_concluido': self.status == 'concluido'
-    }
-    
-    # COMBINAR TODOS OS DADOS
-    result = {}
-    result.update(basic_data)
-    result.update(date_data)
-    result.update(horarios_data)
-    result.update(calculos_data)
-    result.update(formatacao_data)
-    result.update(relacionamentos_data)
-    result.update(dashboard_data)
-    
-    # VALIDAÇÃO FINAL - Garantir que não há valores None críticos
-    for key, value in result.items():
-        if key.endswith('_minutos') and (value is None or str(value).lower() in ['nan', 'none']):
-            result[key] = 0
-        elif key == 'percentual_conclusao' and (value is None or str(value).lower() in ['nan', 'none']):
-            result[key] = 0
-    
-    return result
-
-def _formatar_tempo_ultra_seguro(self, minutos):
-    """Formata tempo em minutos de forma ULTRA segura - NUNCA retorna NaN"""
-    try:
-        # Validação inicial
-        if minutos is None:
-            return "0min"
-        
-        # Converter para número
-        if isinstance(minutos, str):
-            if minutos.lower() in ['nan', 'none', 'null', '', 'undefined']:
-                return "0min"
-            # Tentar extrair número
-            import re
-            numbers = re.findall(r'\d+', minutos)
-            if numbers:
-                minutos = int(numbers[0])
-            else:
-                return "0min"
-        
-        # Verificar se é número válido
-        minutos_num = float(minutos)
-        if math.isnan(minutos_num) or math.isinf(minutos_num):
-            return "0min"
-        
-        # Converter para inteiro positivo
-        minutos_int = max(0, int(minutos_num))
-        
-        # Formatação
-        if minutos_int == 0:
-            return "0min"
-        elif minutos_int < 60:
-            return f"{minutos_int}min"
+        # CORRIGIDO: Buscar TODOS os status, não só em_andamento
+        status_filter = request.args.get('status')
+        if status_filter:
+            servicos = ServicoExecucao.query.filter_by(status=status_filter).all()
         else:
-            horas = minutos_int // 60
-            mins = minutos_int % 60
-            if mins == 0:
-                return f"{horas}h"
-            else:
-                return f"{horas}h {mins}min"
-                
+            # Por padrão, buscar em andamento e pausados
+            servicos = ServicoExecucao.query.filter(
+                ServicoExecucao.status.in_(['em_andamento', 'pausado'])
+            ).all()
+        
+        return jsonify([servico.to_dict() for servico in servicos])
     except Exception as e:
-        print(f"Erro na formatação de tempo (valor: {minutos}): {e}")
-        return "0min"
+        return jsonify({'error': str(e)}), 500
 
-def _safe_relationship_dict_ultra(self, relationship):
-    """Converte relacionamento para dict de forma ULTRA segura"""
+@servico_execucao_bp.route('/servicos-execucao/todos', methods=['GET'])
+def get_todos_servicos():
+    """Busca todos os serviços independente do status"""
     try:
-        if not relationship:
-            return None
+        servicos = ServicoExecucao.query.order_by(ServicoExecucao.criado_em.desc()).all()
+        return jsonify([servico.to_dict() for servico in servicos])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/concluidos', methods=['GET'])
+def get_servicos_concluidos():
+    """Lista serviços concluídos"""
+    try:
+        servicos = ServicoExecucao.query.filter_by(
+            status='concluido'
+        ).order_by(ServicoExecucao.fim_real.desc()).all()
         
-        # Tentar método to_dict primeiro
-        if hasattr(relationship, 'to_dict') and callable(relationship.to_dict):
-            try:
-                return relationship.to_dict()
-            except Exception:
-                pass
+        return jsonify([servico.to_dict() for servico in servicos])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao', methods=['POST'])
+def create_servico_execucao():
+    try:
+        data = request.get_json()
         
-        # Fallback para atributos básicos
-        result = {}
+        # Validar campos obrigatórios
+        campos_obrigatorios = ['box_id', 'mecanico_id', 'tipo_servico_id', 'nome_cliente', 'marca_carro', 'modelo_carro']
+        for campo in campos_obrigatorios:
+            if not data.get(campo):
+                return jsonify({'error': f'Campo obrigatório: {campo}'}), 400
         
-        # ID sempre presente
-        if hasattr(relationship, 'id'):
-            result['id'] = int(relationship.id) if relationship.id is not None else 0
+        # Buscar o tipo de serviço para calcular o fim previsto
+        tipo_servico = TipoServico.query.get(data['tipo_servico_id'])
+        if not tipo_servico:
+            return jsonify({'error': 'Tipo de serviço não encontrado'}), 404
         
-        # Nome (vários campos possíveis)
-        nome_campos = ['nome', 'name', 'title', 'descricao']
-        for campo in nome_campos:
-            if hasattr(relationship, campo):
-                valor = getattr(relationship, campo)
-                if valor:
-                    result['nome'] = str(valor)
-                    break
+        # Verificar se box está disponível
+        box = Box.query.get(data['box_id'])
+        if not box:
+            return jsonify({'error': 'Box não encontrado'}), 404
         
-        # Se não encontrou nome, usar valor padrão
-        if 'nome' not in result:
-            result['nome'] = f"Item {result.get('id', 'N/A')}"
+        if box.status != 'livre':
+            return jsonify({'error': 'Box não está disponível'}), 400
         
-        return result if result else None
+        # Calcular fim previsto baseado no tempo estimado + tempo extra
+        inicio = datetime.utcnow()
+        tempo_total_minutos = tipo_servico.tempo_estimado + data.get('tempo_extra_minutos', 0)
+        fim_previsto = inicio + timedelta(minutes=tempo_total_minutos)
+        
+        # Atualizar status do box para ocupado
+        box.status = 'ocupado'
+        
+        servico = ServicoExecucao(
+            box_id=data['box_id'],
+            mecanico_id=data['mecanico_id'],
+            tipo_servico_id=data['tipo_servico_id'],
+            inicio=inicio,
+            fim_previsto=fim_previsto,
+            tempo_extra_minutos=data.get('tempo_extra_minutos', 0),
+            motivo_tempo_extra=data.get('motivo_tempo_extra'),
+            nome_cliente=data['nome_cliente'],
+            telefone_cliente=data.get('telefone_cliente'),
+            marca_carro=data['marca_carro'],
+            modelo_carro=data['modelo_carro'],
+            cor_carro=data.get('cor_carro'),
+            placa_carro=data.get('placa_carro'),
+            observacoes=data.get('observacoes'),
+            status='em_andamento'
+        )
+        
+        db.session.add(servico)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Serviço iniciado com sucesso',
+            'servico': servico.to_dict()
+        }), 201
         
     except Exception as e:
-        print(f"Erro ao processar relacionamento: {e}")
-        return None
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
+@servico_execucao_bp.route('/servicos-execucao/<int:id>', methods=['GET'])
+def get_servico_execucao(id):
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        return jsonify(servico.to_dict())
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    
-    def _formatar_tempo_seguro(self, minutos):
-        """Formata tempo em minutos de forma segura"""
-        try:
-            minutos_int = int(float(minutos)) if minutos is not None and str(minutos).lower() not in ['nan', 'none', ''] else 0
-            
-            if minutos_int <= 0:
-                return "0min"
-            elif minutos_int < 60:
-                return f"{minutos_int}min"
-            else:
-                horas = minutos_int // 60
-                mins = minutos_int % 60
-                if mins == 0:
-                    return f"{horas}h"
-                else:
-                    return f"{horas}h {mins}min"
-        except (ValueError, TypeError):
-            return "0min"
-    
-    def _safe_relationship_dict(self, relationship):
-        """Converte relacionamento para dict de forma segura"""
-        try:
-            if relationship and hasattr(relationship, 'to_dict'):
-                return relationship.to_dict()
-            elif relationship:
-                # Fallback básico
-                return {
-                    'id': getattr(relationship, 'id', None),
-                    'nome': getattr(relationship, 'nome', None)
-                }
-            return None
-        except Exception:
-            return None
-    
-    def pausar_servico(self, motivo=None):
-        """Pausa o serviço de forma segura"""
-        if self.status != 'em_andamento':
-            raise ValueError('Serviço não está em andamento')
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/pausar', methods=['PUT'])
+def pausar_servico(id):
+    """Pausa um serviço em execução"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        data = request.get_json() or {}
+        motivo = data.get('motivo', 'Motivo não informado')
+        
+        if servico.status != 'em_andamento':
+            return jsonify({'error': 'Serviço não está em andamento'}), 400
+        
+        # Usar o método da model se existir, senão fazer manualmente
+        agora = datetime.utcnow()
+        servico.status = 'pausado'
+        servico.pausado_em = agora
+        
+        # Atualizar status do box para livre
+        box = Box.query.get(servico.box_id)
+        if box:
+            box.status = 'livre'
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Serviço pausado com sucesso',
+            'pausado_em': agora.isoformat(),
+            'motivo': motivo,
+            'servico': servico.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/despausar', methods=['PUT'])
+def despausar_servico(id):
+    """Retoma um serviço pausado"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        
+        if servico.status != 'pausado':
+            return jsonify({'error': 'Serviço não está pausado'}), 400
+        
+        # Verificar se o box está livre
+        box = Box.query.get(servico.box_id)
+        if box.status != 'livre':
+            return jsonify({'error': 'Box não está disponível para retomar o serviço'}), 400
         
         agora = datetime.utcnow()
-        self.status = 'pausado'
-        self.pausado_em = agora
-        self.atualizado_em = agora
         
-        # Adicionar ao histórico de pausas
-        if motivo:
-            self._adicionar_historico_pausa(agora, motivo)
-        
-        return agora
-    
-    def despausar_servico(self):
-        """Retoma o serviço de forma segura"""
-        if self.status != 'pausado':
-            raise ValueError('Serviço não está pausado')
-        
-        agora = datetime.utcnow()
-        
-        # Calcular tempo pausado
+        # Calcular tempo que ficou pausado
         tempo_pausado_minutos = 0
-        if self.pausado_em:
-            delta = agora - self.pausado_em
-            tempo_pausado_minutos = max(0, int(delta.total_seconds() / 60))
+        if servico.pausado_em:
+            tempo_pausado = agora - servico.pausado_em
+            tempo_pausado_minutos = int(tempo_pausado.total_seconds() / 60)
             
-            # Atualizar total de tempo pausado
-            if self.tempo_pausado_total is None:
-                self.tempo_pausado_total = 0
-            self.tempo_pausado_total += tempo_pausado_minutos
+            # Adicionar tempo pausado ao total
+            if not servico.tempo_pausado_total:
+                servico.tempo_pausado_total = 0
+            servico.tempo_pausado_total += tempo_pausado_minutos
             
-            # Ajustar fim previsto
-            if self.fim_previsto:
-                self.fim_previsto = self.fim_previsto + (agora - self.pausado_em)
-            
-            # Finalizar entrada no histórico
-            self._finalizar_historico_pausa(tempo_pausado_minutos)
+            # Ajustar o fim previsto adicionando o tempo que ficou pausado
+            if servico.fim_previsto:
+                servico.fim_previsto += tempo_pausado
         
-        self.status = 'em_andamento'
-        self.pausado_em = None
-        self.atualizado_em = agora
+        # Atualizar status
+        servico.status = 'em_andamento'
+        servico.pausado_em = None
         
-        return tempo_pausado_minutos
-    
-    def finalizar_servico(self, observacoes_finais=None):
-        """Finaliza o serviço de forma segura"""
-        if self.status not in ['em_andamento', 'pausado']:
-            raise ValueError('Serviço não pode ser finalizado')
+        # Ocupar o box novamente
+        box.status = 'ocupado'
         
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Serviço retomado com sucesso',
+            'tempo_pausado_minutos': tempo_pausado_minutos,
+            'novo_fim_previsto': servico.fim_previsto.isoformat() if servico.fim_previsto else None,
+            'servico': servico.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/finalizar', methods=['PUT'])
+def finalizar_servico(id):
+    """Finaliza um serviço e inicia o próximo da fila automaticamente"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        data = request.get_json() or {}
+        observacoes_finais = data.get('observacoes_finais')
+        
+        if servico.status not in ['em_andamento', 'pausado']:
+            return jsonify({'error': 'Serviço não pode ser finalizado'}), 400
+        
+        box_id = servico.box_id
         agora = datetime.utcnow()
+        
+        # Adicionar observações finais se fornecidas
+        if observacoes_finais:
+            observacoes_atuais = servico.observacoes or ''
+            servico.observacoes = f"{observacoes_atuais}\n\nObservações finais: {observacoes_finais}".strip()
         
         # Se estava pausado, calcular último tempo de pausa
-        if self.status == 'pausado' and self.pausado_em:
-            tempo_pausado = max(0, int((agora - self.pausado_em).total_seconds() / 60))
-            if self.tempo_pausado_total is None:
-                self.tempo_pausado_total = 0
-            self.tempo_pausado_total += tempo_pausado
-            self._finalizar_historico_pausa(tempo_pausado)
+        if servico.status == 'pausado' and servico.pausado_em:
+            tempo_pausado = int((agora - servico.pausado_em).total_seconds() / 60)
+            if not servico.tempo_pausado_total:
+                servico.tempo_pausado_total = 0
+            servico.tempo_pausado_total += tempo_pausado
         
-        # Adicionar observações finais
-        if observacoes_finais:
-            if self.observacoes:
-                self.observacoes += f"\n\nObservações finais: {observacoes_finais}"
-            else:
-                self.observacoes = f"Observações finais: {observacoes_finais}"
+        # Finalizar serviço
+        servico.fim_real = agora
+        servico.status = 'concluido'
+        servico.pausado_em = None
         
-        self.fim_real = agora
-        self.status = 'concluido'
-        self.pausado_em = None
-        self.atualizado_em = agora
+        # Liberar o box temporariamente
+        box = Box.query.get(box_id)
+        if box:
+            box.status = 'livre'
         
-        return agora
-    
-    def _adicionar_historico_pausa(self, momento, motivo):
-        """Adiciona entrada no histórico de pausas"""
-        try:
-            if self.historico_pausas:
-                historico = json.loads(self.historico_pausas)
-            else:
-                historico = []
-            
-            entrada = {
-                'inicio': momento.isoformat(),
-                'motivo': motivo or 'Não informado',
-                'duracao_minutos': None  # Será preenchido quando despausar
-            }
-            
-            historico.append(entrada)
-            self.historico_pausas = json.dumps(historico)
-        except Exception:
-            # Se falhar, continuar sem histórico
-            pass
-    
-    def _finalizar_historico_pausa(self, duracao_minutos):
-        """Finaliza última entrada no histórico de pausas"""
-        try:
-            if self.historico_pausas:
-                historico = json.loads(self.historico_pausas)
-                if historico and historico[-1].get('duracao_minutos') is None:
-                    historico[-1]['duracao_minutos'] = duracao_minutos
-                    self.historico_pausas = json.dumps(historico)
-        except Exception:
-            # Se falhar, continuar sem histórico
-            pass
-    
-    def calcular_tempo_total_estimado(self):
-        """Calcula o tempo total estimado incluindo tempo extra"""
-        if self.tipo_servico and hasattr(self.tipo_servico, 'tempo_estimado'):
-            tempo_base = self.tipo_servico.tempo_estimado or 60
+        db.session.commit()
+        
+        # Tentar iniciar o próximo serviço da fila
+        proximo_servico = FilaServico.query.filter_by(
+            box_id=box_id,
+            status='agendado',
+            posicao_fila=1
+        ).first()
+        
+        response_data = {
+            'message': 'Serviço finalizado com sucesso',
+            'finalizado_em': agora.isoformat(),
+            'servico_finalizado': servico.to_dict(),
+            'proximo_servico': None
+        }
+        
+        if proximo_servico:
+            try:
+                # Iniciar próximo serviço automaticamente
+                resultado_proximo = iniciar_proximo_servico_interno(box_id, proximo_servico)
+                response_data['proximo_servico'] = resultado_proximo
+                response_data['message'] += ' e próximo serviço iniciado automaticamente'
+            except Exception as e:
+                # Se falhar ao iniciar o próximo, pelo menos o atual foi finalizado
+                response_data['erro_proximo'] = f'Erro ao iniciar próximo serviço: {str(e)}'
+                response_data['message'] += ' (erro ao iniciar próximo automaticamente)'
         else:
-            tempo_base = 60
+            response_data['message'] += ' (nenhum serviço na fila)'
         
-        tempo_extra = self.tempo_extra_minutos or 0
-        return tempo_base + tempo_extra
+        return jsonify(response_data)
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
+def iniciar_proximo_servico_interno(box_id, proximo_servico):
+    """Função interna para iniciar o próximo serviço da fila"""
+    try:
+        # Buscar tipo de serviço
+        tipo_servico = TipoServico.query.get(proximo_servico.tipo_servico_id)
+        if not tipo_servico:
+            raise Exception('Tipo de serviço não encontrado')
+        
+        # Calcular horários
+        inicio = datetime.utcnow()
+        tempo_total_minutos = tipo_servico.tempo_estimado + (proximo_servico.tempo_extra_minutos or 0)
+        fim_previsto = inicio + timedelta(minutes=tempo_total_minutos)
+        
+        # Criar novo serviço em execução
+        novo_servico = ServicoExecucao(
+            box_id=proximo_servico.box_id,
+            mecanico_id=proximo_servico.mecanico_id,
+            tipo_servico_id=proximo_servico.tipo_servico_id,
+            inicio=inicio,
+            fim_previsto=fim_previsto,
+            tempo_extra_minutos=proximo_servico.tempo_extra_minutos or 0,
+            motivo_tempo_extra=proximo_servico.motivo_tempo_extra,
+            nome_cliente=proximo_servico.nome_cliente,
+            telefone_cliente=proximo_servico.telefone_cliente,
+            marca_carro=proximo_servico.marca_carro,
+            modelo_carro=proximo_servico.modelo_carro,
+            cor_carro=proximo_servico.cor_carro,
+            placa_carro=proximo_servico.placa_carro,
+            observacoes=proximo_servico.observacoes,
+            status='em_andamento'
+        )
+        
+        # Atualizar status do box
+        box = Box.query.get(box_id)
+        box.status = 'ocupado'
+        
+        # Remover da fila
+        db.session.delete(proximo_servico)
+        
+        # Reorganizar fila (diminuir posição de todos os outros)
+        servicos_restantes = FilaServico.query.filter_by(
+            box_id=box_id,
+            status='agendado'
+        ).filter(FilaServico.posicao_fila > 1).all()
+        
+        for servico in servicos_restantes:
+            servico.posicao_fila -= 1
+        
+        db.session.add(novo_servico)
+        db.session.commit()
+        
+        return novo_servico.to_dict()
+        
+    except Exception as e:
+        db.session.rollback()
+        raise e
 
-# ENDPOINTS ADICIONAIS PARA DIAGNÓSTICO E CORREÇÃO
-# Adicionar ao arquivo src/routes/servico_execucao.py
+@servico_execucao_bp.route('/servicos-execucao/<int:id>', methods=['PUT'])
+def update_servico_execucao(id):
+    """Atualiza informações de um serviço"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        data = request.get_json()
+        
+        # Campos editáveis
+        campos_editaveis = [
+            'observacoes', 'tempo_extra_minutos', 'motivo_tempo_extra',
+            'telefone_cliente', 'cor_carro', 'placa_carro'
+        ]
+        
+        alterou_tempo = False
+        for campo in campos_editaveis:
+            if campo in data:
+                valor_anterior = getattr(servico, campo)
+                setattr(servico, campo, data[campo])
+                
+                if campo == 'tempo_extra_minutos' and valor_anterior != data[campo]:
+                    alterou_tempo = True
+        
+        # Se alterou tempo extra, recalcular fim previsto
+        if alterou_tempo and servico.status in ['em_andamento', 'pausado'] and servico.tipo_servico:
+            tempo_ja_decorrido = 0
+            if servico.inicio:
+                agora = datetime.utcnow()
+                tempo_ja_decorrido = (agora - servico.inicio).total_seconds() / 60
+                
+                # Subtrair tempo pausado
+                if servico.tempo_pausado_total:
+                    tempo_ja_decorrido -= servico.tempo_pausado_total
+                
+                # Se está pausado, subtrair tempo da pausa atual
+                if servico.status == 'pausado' and servico.pausado_em:
+                    tempo_pausa_atual = (agora - servico.pausado_em).total_seconds() / 60
+                    tempo_ja_decorrido -= tempo_pausa_atual
+            
+            # Calcular novo fim previsto
+            tempo_total_necessario = servico.tipo_servico.tempo_estimado + (servico.tempo_extra_minutos or 0)
+            tempo_restante = max(0, tempo_total_necessario - tempo_ja_decorrido)
+            
+            if servico.status == 'em_andamento':
+                servico.fim_previsto = datetime.utcnow() + timedelta(minutes=tempo_restante)
+        
+        db.session.commit()
+        
+        response_data = {
+            'message': 'Serviço atualizado com sucesso',
+            'servico': servico.to_dict()
+        }
+        
+        if alterou_tempo:
+            response_data['message'] += ' e tempo recalculado'
+            response_data['novo_fim_previsto'] = servico.fim_previsto.isoformat() if servico.fim_previsto else None
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
+@servico_execucao_bp.route('/servicos-execucao/<int:id>', methods=['DELETE'])
+def delete_servico_execucao(id):
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        
+        # Liberar o box se o serviço estava em andamento ou pausado
+        if servico.status in ['em_andamento', 'pausado']:
+            box = Box.query.get(servico.box_id)
+            if box:
+                box.status = 'livre'
+        
+        db.session.delete(servico)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Serviço deletado com sucesso',
+            'id': id
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
 
+@servico_execucao_bp.route('/servicos-execucao/box/<int:box_id>', methods=['GET'])
+def get_servico_por_box(box_id):
+    """Busca serviço ativo (em andamento ou pausado) de um box específico"""
+    try:
+        servico = ServicoExecucao.query.filter_by(
+            box_id=box_id
+        ).filter(
+            ServicoExecucao.status.in_(['em_andamento', 'pausado'])
+        ).first()
+        
+        if servico:
+            return jsonify(servico.to_dict())
+        else:
+            return jsonify(None)
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/pausados', methods=['GET'])
+def get_servicos_pausados():
+    """Lista todos os serviços pausados com informações detalhadas"""
+    try:
+        box_id = request.args.get('box_id')
+        
+        query = ServicoExecucao.query.filter_by(status='pausado')
+        if box_id:
+            query = query.filter_by(box_id=int(box_id))
+        
+        servicos_pausados = query.order_by(ServicoExecucao.pausado_em.desc()).all()
+        
+        resultado = []
+        for servico in servicos_pausados:
+            servico_dict = servico.to_dict()
+            
+            # Calcular tempo de pausa atual
+            if servico.pausado_em:
+                agora = datetime.utcnow()
+                tempo_pausa_atual = int((agora - servico.pausado_em).total_seconds() / 60)
+                servico_dict['tempo_pausa_atual_minutos'] = tempo_pausa_atual
+                servico_dict['tempo_pausa_atual_formatado'] = formatar_tempo_minutos(tempo_pausa_atual)
+                
+                # Classificar urgência da pausa
+                if tempo_pausa_atual > 120:  # Mais de 2 horas
+                    servico_dict['urgencia_pausa'] = 'critica'
+                elif tempo_pausa_atual > 60:  # Mais de 1 hora
+                    servico_dict['urgencia_pausa'] = 'alta'
+                elif tempo_pausa_atual > 30:  # Mais de 30 minutos
+                    servico_dict['urgencia_pausa'] = 'media'
+                else:
+                    servico_dict['urgencia_pausa'] = 'baixa'
+            
+            resultado.append(servico_dict)
+        
+        # Estatísticas dos serviços pausados
+        estatisticas = {
+            'total_pausados': len(servicos_pausados),
+            'pausas_criticas': len([s for s in resultado if s.get('urgencia_pausa') == 'critica']),
+            'pausas_altas': len([s for s in resultado if s.get('urgencia_pausa') == 'alta']),
+            'pausas_medias': len([s for s in resultado if s.get('urgencia_pausa') == 'media']),
+            'pausas_baixas': len([s for s in resultado if s.get('urgencia_pausa') == 'baixa']),
+            'boxes_afetados': len(set(s['box_id'] for s in resultado))
+        }
+        
+        return jsonify({
+            'servicos_pausados': resultado,
+            'estatisticas': estatisticas,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/estatisticas', methods=['GET'])
+def get_estatisticas_gerais():
+    """Retorna estatísticas gerais dos serviços"""
+    try:
+        hoje = datetime.now().date()
+        inicio_dia = datetime.combine(hoje, datetime.min.time())
+        fim_dia = datetime.combine(hoje, datetime.max.time())
+        
+        # Contar serviços por status
+        em_andamento = ServicoExecucao.query.filter_by(status='em_andamento').count()
+        pausados = ServicoExecucao.query.filter_by(status='pausado').count()
+        concluidos_hoje = ServicoExecucao.query.filter_by(status='concluido').filter(
+            ServicoExecucao.fim_real >= inicio_dia,
+            ServicoExecucao.fim_real <= fim_dia
+        ).count()
+        
+        # Tempo médio dos serviços concluídos hoje
+        servicos_concluidos = ServicoExecucao.query.filter_by(status='concluido').filter(
+            ServicoExecucao.fim_real >= inicio_dia,
+            ServicoExecucao.fim_real <= fim_dia
+        ).all()
+        
+        tempo_medio_execucao = 0
+        if servicos_concluidos:
+            tempos = []
+            for servico in servicos_concluidos:
+                if servico.inicio and servico.fim_real:
+                    tempo_total = (servico.fim_real - servico.inicio).total_seconds() / 60
+                    tempo_efetivo = tempo_total - (servico.tempo_pausado_total or 0)
+                    tempos.append(max(0, tempo_efetivo))
+            
+            if tempos:
+                tempo_medio_execucao = int(sum(tempos) / len(tempos))
+        
+        # Boxes ocupados
+        boxes_ocupados = ServicoExecucao.query.filter(
+            ServicoExecucao.status.in_(['em_andamento', 'pausado'])
+        ).with_entities(ServicoExecucao.box_id).distinct().count()
+        
+        return jsonify({
+            'em_andamento': em_andamento,
+            'pausados': pausados,
+            'concluidos_hoje': concluidos_hoje,
+            'boxes_ocupados': boxes_ocupados,
+            'tempo_medio_execucao_minutos': tempo_medio_execucao,
+            'tempo_medio_execucao_formatado': formatar_tempo_minutos(tempo_medio_execucao),
+            'data_referencia': hoje.isoformat(),
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def formatar_tempo_minutos(minutos):
+    """Formata tempo em minutos para formato legível"""
+    if minutos == 0:
+        return "0min"
+    elif minutos < 60:
+        return f"{minutos}min"
+    else:
+        horas = minutos // 60
+        mins = minutos % 60
+        if mins == 0:
+            return f"{horas}h"
+        else:
+            return f"{horas}h {mins}min"
+
+@servico_execucao_bp.route('/corrigir-banco-dados', methods=['POST'])
+def corrigir_banco_dados():
+    """ENDPOINT TEMPORÁRIO - Corrige problemas no banco de dados"""
+    try:
+        data = request.get_json() or {}
+        senha = data.get('senha', '')
+        
+        # Senha de segurança
+        if senha != 'corrigir2025':
+            return jsonify({'erro': 'Senha necessária para correção'}), 401
+        
+        from sqlalchemy import text
+        correcoes = []
+        
+        # 1. Verificar e adicionar campos faltantes na tabela servico_execucao
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo criado_em verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo criado_em: {str(e)}')
+        
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP'))
+            correcoes.append('✅ Campo atualizado_em verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo atualizado_em: {str(e)}')
+        
+        try:
+            db.session.execute(text('ALTER TABLE servico_execucao ADD COLUMN IF NOT EXISTS historico_pausas TEXT'))
+            correcoes.append('✅ Campo historico_pausas verificado/adicionado')
+        except Exception as e:
+            correcoes.append(f'ℹ️ Campo historico_pausas: {str(e)}')
+        
+        # 2. Corrigir valores NULL que causam NaN
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET tempo_pausado_total = 0 
+                WHERE tempo_pausado_total IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_pausado_total NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro tempo_pausado_total: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET tempo_extra_minutos = 0 
+                WHERE tempo_extra_minutos IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros tempo_extra_minutos NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro tempo_extra_minutos: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET criado_em = inicio 
+                WHERE criado_em IS NULL AND inicio IS NOT NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros criado_em NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro criado_em: {e}')
+        
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET atualizado_em = COALESCE(fim_real, pausado_em, inicio, CURRENT_TIMESTAMP) 
+                WHERE atualizado_em IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros atualizado_em NULL')
+        except Exception as e:
+            correcoes.append(f'❌ Erro atualizado_em: {e}')
+        
+        # 3. Corrigir inconsistências de status que causam problemas
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao 
+                SET status = 'em_andamento', pausado_em = NULL 
+                WHERE status = 'pausado' AND pausado_em IS NULL
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} serviços pausados sem data de pausa')
+        except Exception as e:
+            correcoes.append(f'❌ Erro status pausado: {e}')
+        
+        # 4. Sincronizar status dos boxes
+        try:
+            # Liberar boxes que não têm serviço ativo
+            result = db.session.execute(text('''
+                UPDATE box 
+                SET status = 'livre' 
+                WHERE status = 'ocupado' 
+                AND id NOT IN (
+                    SELECT DISTINCT box_id 
+                    FROM servico_execucao 
+                    WHERE status IN ('em_andamento', 'pausado')
+                )
+            '''))
+            correcoes.append(f'✅ Liberados {result.rowcount} boxes sem serviço ativo')
+        except Exception as e:
+            correcoes.append(f'❌ Erro sincronização boxes: {e}')
+        
+        try:
+            # Ocupar boxes que têm serviço ativo
+            result = db.session.execute(text('''
+                UPDATE box 
+                SET status = 'ocupado' 
+                WHERE status = 'livre' 
+                AND id IN (
+                    SELECT DISTINCT box_id 
+                    FROM servico_execucao 
+                    WHERE status IN ('em_andamento', 'pausado')
+                )
+            '''))
+            correcoes.append(f'✅ Ocupados {result.rowcount} boxes com serviço ativo')
+        except Exception as e:
+            correcoes.append(f'❌ Erro ocupação boxes: {e}')
+        
+        # 5. Corrigir fim_previsto para serviços sem essa informação
+        try:
+            result = db.session.execute(text('''
+                UPDATE servico_execucao se
+                SET fim_previsto = se.inicio + INTERVAL '1 hour' * (
+                    COALESCE(ts.tempo_estimado, 60) + COALESCE(se.tempo_extra_minutos, 0)
+                ) / 60
+                FROM tipo_servico ts
+                WHERE se.tipo_servico_id = ts.id 
+                AND se.fim_previsto IS NULL 
+                AND se.inicio IS NOT NULL
+                AND se.status IN ('em_andamento', 'pausado')
+            '''))
+            correcoes.append(f'✅ Corrigidos {result.rowcount} registros fim_previsto NULL')
+        except Exception as e:
+            # Fallback para bancos que não suportam INTERVAL
+            try:
+                result = db.session.execute(text('''
+                    UPDATE servico_execucao 
+                    SET fim_previsto = datetime(inicio, '+60 minutes')
+                    WHERE fim_previsto IS NULL 
+                    AND inicio IS NOT NULL
+                    AND status IN ('em_andamento', 'pausado')
+                '''))
+                correcoes.append(f'✅ Corrigidos {result.rowcount} registros fim_previsto NULL (fallback)')
+            except Exception as e2:
+                correcoes.append(f'❌ Erro fim_previsto: {e} / {e2}')
+        
+        # 6. Commit das alterações
+        db.session.commit()
+        
+        # 7. Verificar resultado final
+        try:
+            result = db.session.execute(text('SELECT COUNT(*) FROM servico_execucao')).fetchone()
+            total_servicos = result[0] if result else 0
+            
+            result = db.session.execute(text('''
+                SELECT COUNT(*) FROM servico_execucao 
+                WHERE tempo_pausado_total IS NOT NULL 
+                AND tempo_extra_minutos IS NOT NULL
+            ''')).fetchone()
+            registros_validos = result[0] if result else 0
+            
+            result = db.session.execute(text('''
+                SELECT COUNT(*) FROM servico_execucao 
+                WHERE status IN ('em_andamento', 'pausado')
+            ''')).fetchone()
+            servicos_ativos = result[0] if result else 0
+            
+            correcoes.append(f'📊 Total de serviços: {total_servicos}')
+            correcoes.append(f'📊 Registros com dados válidos: {registros_validos}')
+            correcoes.append(f'📊 Serviços ativos: {servicos_ativos}')
+            
+        except Exception as e:
+            correcoes.append(f'❌ Erro na verificação final: {e}')
+        
+        return jsonify({
+            'status': 'sucesso',
+            'correcoes': correcoes,
+            'timestamp': datetime.utcnow().isoformat(),
+            'instrucoes': [
+                '1. Substitua o arquivo src/models/servico_execucao.py pelo código corrigido',
+                '2. Reinicie a aplicação',
+                '3. Teste o dashboard novamente',
+                '4. Este endpoint pode ser removido após a correção'
+            ]
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'erro_critico',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat(),
+            'correcoes': correcoes if 'correcoes' in locals() else []
+        }), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/finalizar', methods=['PUT'])
+def finalizar_servico_corrigido(id):
+    """Finaliza um serviço - VERSÃO CORRIGIDA"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        data = request.get_json() or {}
+        observacoes_finais = data.get('observacoes_finais')
+        
+        print(f"DEBUG: Finalizando serviço {id}, status atual: {servico.status}")
+        
+        if servico.status not in ['em_andamento', 'pausado']:
+            return jsonify({'error': f'Serviço não pode ser finalizado. Status atual: {servico.status}'}), 400
+        
+        box_id = servico.box_id
+        agora = datetime.utcnow()
+        
+        # Usar método da model se existir, senão fazer manualmente
+        try:
+            servico.finalizar_servico(observacoes_finais)
+        except AttributeError:
+            # Fallback manual se o método não existir
+            if servico.status == 'pausado' and servico.pausado_em:
+                tempo_pausado = int((agora - servico.pausado_em).total_seconds() / 60)
+                if not servico.tempo_pausado_total:
+                    servico.tempo_pausado_total = 0
+                servico.tempo_pausado_total += tempo_pausado
+            
+            if observacoes_finais:
+                if servico.observacoes:
+                    servico.observacoes += f"\n\nObservações finais: {observacoes_finais}"
+                else:
+                    servico.observacoes = f"Observações finais: {observacoes_finais}"
+            
+            servico.fim_real = agora
+            servico.status = 'concluido'
+            servico.pausado_em = None
+            servico.atualizado_em = agora
+        
+        # Liberar o box
+        box = Box.query.get(box_id)
+        if box:
+            box.status = 'livre'
+            print(f"DEBUG: Box {box_id} liberado")
+        
+        db.session.commit()
+        print(f"DEBUG: Serviço {id} finalizado com sucesso")
+        
+        # Tentar iniciar próximo serviço da fila
+        proximo_servico = FilaServico.query.filter_by(
+            box_id=box_id,
+            status='agendado',
+            posicao_fila=1
+        ).first()
+        
+        response_data = {
+            'success': True,
+            'message': 'Serviço finalizado com sucesso',
+            'finalizado_em': agora.isoformat(),
+            'servico_finalizado': servico.to_dict(),
+            'proximo_servico': None
+        }
+        
+        if proximo_servico:
+            try:
+                print(f"DEBUG: Iniciando próximo serviço {proximo_servico.id}")
+                resultado_proximo = iniciar_proximo_servico_interno(box_id, proximo_servico)
+                response_data['proximo_servico'] = resultado_proximo
+                response_data['message'] += ' e próximo serviço iniciado automaticamente'
+                print(f"DEBUG: Próximo serviço iniciado com sucesso")
+            except Exception as e:
+                print(f"DEBUG: Erro ao iniciar próximo serviço: {e}")
+                response_data['erro_proximo'] = f'Erro ao iniciar próximo serviço: {str(e)}'
+                response_data['message'] += ' (erro ao iniciar próximo automaticamente)'
+        else:
+            response_data['message'] += ' (nenhum serviço na fila)'
+            print(f"DEBUG: Nenhum serviço na fila para box {box_id}")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        print(f"DEBUG: Erro ao finalizar serviço {id}: {e}")
+        db.session.rollback()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/pausar', methods=['PUT'])
+def pausar_servico_corrigido(id):
+    """Pausa um serviço - VERSÃO CORRIGIDA"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        data = request.get_json() or {}
+        motivo = data.get('motivo', 'Motivo não informado')
+        
+        print(f"DEBUG: Pausando serviço {id}, status atual: {servico.status}")
+        
+        if servico.status != 'em_andamento':
+            return jsonify({'error': f'Serviço não está em andamento. Status atual: {servico.status}'}), 400
+        
+        agora = datetime.utcnow()
+        
+        # Usar método da model se existir, senão fazer manualmente
+        try:
+            servico.pausar_servico(motivo)
+        except AttributeError:
+            # Fallback manual
+            servico.status = 'pausado'
+            servico.pausado_em = agora
+            servico.atualizado_em = agora
+        
+        # Liberar o box
+        box = Box.query.get(servico.box_id)
+        if box:
+            box.status = 'livre'
+            print(f"DEBUG: Box {servico.box_id} liberado por pausa")
+        
+        db.session.commit()
+        print(f"DEBUG: Serviço {id} pausado com sucesso")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Serviço pausado com sucesso',
+            'pausado_em': agora.isoformat(),
+            'motivo': motivo,
+            'servico': servico.to_dict()
+        })
+        
+    except Exception as e:
+        print(f"DEBUG: Erro ao pausar serviço {id}: {e}")
+        db.session.rollback()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/despausar', methods=['PUT'])
+def despausar_servico_corrigido(id):
+    """Retoma um serviço pausado - VERSÃO CORRIGIDA"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        
+        print(f"DEBUG: Despausando serviço {id}, status atual: {servico.status}")
+        
+        if servico.status != 'pausado':
+            return jsonify({'error': f'Serviço não está pausado. Status atual: {servico.status}'}), 400
+        
+        # Verificar se o box está livre
+        box = Box.query.get(servico.box_id)
+        if box and box.status != 'livre':
+            return jsonify({'error': f'Box não está disponível. Status do box: {box.status}'}), 400
+        
+        agora = datetime.utcnow()
+        tempo_pausado_minutos = 0
+        
+        # Usar método da model se existir, senão fazer manualmente
+        try:
+            tempo_pausado_minutos = servico.despausar_servico()
+        except AttributeError:
+            # Fallback manual
+            if servico.pausado_em:
+                tempo_pausado = agora - servico.pausado_em
+                tempo_pausado_minutos = int(tempo_pausado.total_seconds() / 60)
+                
+                if not servico.tempo_pausado_total:
+                    servico.tempo_pausado_total = 0
+                servico.tempo_pausado_total += tempo_pausado_minutos
+                
+                if servico.fim_previsto:
+                    servico.fim_previsto += tempo_pausado
+            
+            servico.status = 'em_andamento'
+            servico.pausado_em = None
+            servico.atualizado_em = agora
+        
+        # Ocupar o box novamente
+        if box:
+            box.status = 'ocupado'
+            print(f"DEBUG: Box {servico.box_id} ocupado novamente")
+        
+        db.session.commit()
+        print(f"DEBUG: Serviço {id} despausado com sucesso")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Serviço retomado com sucesso',
+            'tempo_pausado_minutos': tempo_pausado_minutos,
+            'novo_fim_previsto': servico.fim_previsto.isoformat() if servico.fim_previsto else None,
+            'servico': servico.to_dict()
+        })
+        
+    except Exception as e:
+        print(f"DEBUG: Erro ao despausar serviço {id}: {e}")
+        db.session.rollback()
+        return jsonify({'error': str(e), 'success': False}), 500
+
+@servico_execucao_bp.route('/servicos-execucao/<int:id>/status', methods=['GET'])
+def get_status_servico(id):
+    """Retorna status detalhado de um serviço específico"""
+    try:
+        servico = ServicoExecucao.query.get_or_404(id)
+        
+        # Forçar recálculo dos dados em tempo real
+        servico_dict = servico.to_dict()
+        
+        # Adicionar informações extras para debug
+        servico_dict['debug_info'] = {
+            'campos_nulos': {
+                'tempo_pausado_total': servico.tempo_pausado_total is None,
+                'tempo_extra_minutos': servico.tempo_extra_minutos is None,
+                'inicio': servico.inicio is None,
+                'fim_previsto': servico.fim_previsto is None,
+                'tipo_servico': servico.tipo_servico is None
+            },
+            'tipo_servico_info': {
+                'id': servico.tipo_servico.id if servico.tipo_servico else None,
+                'nome': servico.tipo_servico.nome if servico.tipo_servico else None,
+                'tempo_estimado': servico.tipo_servico.tempo_estimado if servico.tipo_servico else None
+            } if servico.tipo_servico else None,
+            'calculado_em': datetime.utcnow().isoformat()
+        }
+        
+        return jsonify({
+            'success': True,
+            'servico': servico_dict
+        })
+        
+    except Exception as e:
+        print(f"DEBUG: Erro ao buscar status do serviço {id}: {e}")
+        return jsonify({'error': str(e), 'success': False}), 500
+
+def iniciar_proximo_servico_interno_corrigido(box_id, proximo_servico):
+    """Função interna para iniciar o próximo serviço da fila - VERSÃO CORRIGIDA"""
+    try:
+        print(f"DEBUG: Iniciando serviço interno para box {box_id}")
+        
+        # Buscar tipo de serviço
+        tipo_servico = TipoServico.query.get(proximo_servico.tipo_servico_id)
+        if not tipo_servico:
+            raise Exception(f'Tipo de serviço {proximo_servico.tipo_servico_id} não encontrado')
+        
+        # Calcular horários
+        inicio = datetime.utcnow()
+        tempo_estimado = tipo_servico.tempo_estimado or 60
+        tempo_extra = proximo_servico.tempo_extra_minutos or 0
+        tempo_total_minutos = tempo_estimado + tempo_extra
+        fim_previsto = inicio + timedelta(minutes=tempo_total_minutos)
+        
+        print(f"DEBUG: Tempo estimado: {tempo_estimado}, extra: {tempo_extra}, total: {tempo_total_minutos}")
+        
+        # Criar novo serviço em execução
+        novo_servico = ServicoExecucao(
+            box_id=proximo_servico.box_id,
+            mecanico_id=proximo_servico.mecanico_id,
+            tipo_servico_id=proximo_servico.tipo_servico_id,
+            inicio=inicio,
+            fim_previsto=fim_previsto,
+            tempo_extra_minutos=tempo_extra,
+            motivo_tempo_extra=proximo_servico.motivo_tempo_extra,
+            nome_cliente=proximo_servico.nome_cliente,
+            telefone_cliente=proximo_servico.telefone_cliente,
+            marca_carro=proximo_servico.marca_carro,
+            modelo_carro=proximo_servico.modelo_carro,
+            cor_carro=proximo_servico.cor_carro,
+            placa_carro=proximo_servico.placa_carro,
+            observacoes=proximo_servico.observacoes,
+            status='em_andamento',
+            tempo_pausado_total=0,
+            criado_em=inicio,
+            atualizado_em=inicio
+        )
+        
+        # Atualizar status do box
+        box = Box.query.get(box_id)
+        if box:
+            box.status = 'ocupado'
+            print(f"DEBUG: Box {box_id} marcado como ocupado")
+        
+        # Remover da fila
+        posicao_removida = proximo_servico.posicao_fila
+        db.session.delete(proximo_servico)
+        print(f"DEBUG: Serviço removido da fila, posição era {posicao_removida}")
+        
+        # Reorganizar fila (diminuir posição de todos os outros)
+        servicos_restantes = FilaServico.query.filter_by(
+            box_id=box_id,
+            status='agendado'
+        ).filter(FilaServico.posicao_fila > posicao_removida).all()
+        
+        for servico in servicos_restantes:
+            servico.posicao_fila -= 1
+            print(f"DEBUG: Servico fila {servico.id} movido para posição {servico.posicao_fila}")
+        
+        db.session.add(novo_servico)
+        db.session.commit()
+        
+        print(f"DEBUG: Novo serviço {novo_servico.id} criado com sucesso")
+        return novo_servico.to_dict()
+        
+    except Exception as e:
+        print(f"DEBUG: Erro em iniciar_proximo_servico_interno: {e}")
+        db.session.rollback()
+        raise e
